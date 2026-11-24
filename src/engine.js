@@ -1024,6 +1024,7 @@ export class Game {
       if (!sd.silenceAll) sd.silenceNext--;
       this.log(`${d.name} n'active pas sa capacité.`, pid);
     }
+    const star = k.rang === '★'; // le ★ est posé même si le Kick part ensuite (Tombé à pic) : les déclencheurs « Kick ★ posé » restent valables
     sd.kicks.push(k);
     sd.realPosed++;
     this.log(`${this.pname(pid)} ${reveal ? 'révèle et pose' : 'pose'} ${d.name} (${d.rang}, Force ${d.force}).`, pid);
@@ -1032,7 +1033,7 @@ export class Game {
       const ok = await this.activate(pid, k, d.name, async () => { k.activated = true; await FX.onKickPosed(this, pid, k); }, { felin: values ? { values } : null });
       if (!ok) k.countered = true;
     }
-    await FX.afterKickPosed(this, pid, k);
+    await FX.afterKickPosed(this, pid, k, star);
     await this.checkCombos();
   }
 

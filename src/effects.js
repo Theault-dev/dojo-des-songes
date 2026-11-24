@@ -734,9 +734,9 @@ export async function onSupportPosed(g, pid, c) {
 }
 
 /** Après la pose d'un Kick (déclencheurs indépendants de sa propre capacité). */
-export async function afterKickPosed(g, pid, k) {
+export async function afterKickPosed(g, pid, k, star = k.zone === 'kicks' && k.rang === '★') {
   const c = g.s.combat;
-  if (k.zone === 'kicks' && k.rang === '★' && g.hasKw(g.fighter(pid), 'LUCKY STARS') && g.hasSupport(pid, 'FOUTEURS') && !c.usedCombat.has(`fouteurs${pid}`)) {
+  if (c && star && g.hasKw(g.fighter(pid), 'LUCKY STARS') && g.hasSupport(pid, 'FOUTEURS') && !c.usedCombat.has(`fouteurs${pid}`)) {
     c.usedCombat.add(`fouteurs${pid}`);
     await g.activate(pid, g.hasSupport(pid, 'FOUTEURS'), 'Fouteurs de merde', () => fouteursRoll(g, pid));
   }
