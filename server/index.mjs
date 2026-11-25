@@ -5,6 +5,7 @@
 //
 // Variables (lues aussi dans le fichier ENV_FILE, par défaut `.env`) :
 //   PORT (8787), HOST (127.0.0.1 : nginx sera devant), DB_PATH (dojo.db),
+//   SNAPSHOT_PATH (parties en cours écrites à l'arrêt ; défaut : à côté de la base),
 //   PUBLIC_URL (adresse publique ; défaut http://HOST:PORT),
 //   ORIGINS (origines WebSocket autorisées ; défaut : celle de PUBLIC_URL),
 //   DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET,
@@ -13,7 +14,9 @@
 // ─────────────────────────────────────────────────────────────
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { WebSocketServer } from 'ws';
@@ -25,6 +28,14 @@ const MAX_CONN_PER_IP = 8;
 const MAX_PAYLOAD = 16 * 1024;
 const AUTH_PER_MIN = 30;   // requêtes /auth/* par IP et par minute
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
+
+/** Version du moteur : empreinte des fichiers qui décident du déroulement d'une partie. */
+function engineVersion() {
+  const h = createHash('sha256');
+  for (const f of ['engine.js', 'effects.js', 'data.js', 'official.js', 'pvp/view.js', 'pvp/remote.js'])
+    h.update(readFileSync(fileURLToPath(new URL(`../src/${f}`, import.meta.url))));
+  return h.digest('hex').slice(0, 16);
+}
 
 const reject = (socket, status, text) => socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
 
@@ -58,11 +69,20 @@ function limiter(max, windowMs, now) {
 
 export async function startServer({
   port = 8787, host = '127.0.0.1', publicUrl = null, origins = null, dev = false, trustProxy = false,
-  dbPath = 'dojo.db', discord = {}, lobby: lobbyOpts = {}, sweepEvery = 5000, log = console.log, now = () => Date.now(), fetch,
+  dbPath = 'dojo.db', snapshotPath, discord = {}, lobby: lobbyOpts = {}, sweepEvery = 1000, log = console.log, now = () => Date.now(), fetch,
 } = {}) {
   if (dev && (!LOOPBACK.has(host) || publicUrl?.startsWith('https://'))) throw new Error('DEV=1 est réservé au développement local (HOST=127.0.0.1, sans HTTPS).');
   const db = openDb(dbPath, { now });
-  const lobby = new Lobby({ now, ...lobbyOpts });
+  snapshotPath ??= dbPath === ':memory:' ? null : join(dirname(dbPath), 'parties-en-cours.json');
+  const lobby = new Lobby({ now, version: engineVersion(), onFinished: g => db.saveGame(g), ...lobbyOpts });
+  // Parties laissées par un arrêt propre : on les reprend (le fichier est supprimé aussitôt lu)
+  if (snapshotPath && existsSync(snapshotPath)) {
+    let snap = null;
+    try { snap = JSON.parse(readFileSync(snapshotPath, 'utf8')); } catch (e) { console.error('Parties en cours illisibles :', e.message); }
+    unlinkSync(snapshotPath);
+    const r = await lobby.restore(snap);
+    log?.(`Parties reprises : ${r.restored}, annulées : ${r.aborted}`);
+  }
   const perIp = new Map();
   const authLimit = limiter(AUTH_PER_MIN, 60_000, now);
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD, perMessageDeflate: false }); // pas de compression : attaques mémoire
@@ -125,9 +145,19 @@ export async function startServer({
   }, sweepEvery);
   timer.unref();
   log?.(`Dojo PvP : ${base}${dev ? ' (client de test, connexion factice)' : ''}`);
+  const close = () => new Promise(r => { clearInterval(timer); for (const c of wss.clients) c.terminate(); server.closeAllConnections?.(); server.close(() => { db.close(); r(); }); });
   return {
-    server, lobby, db, port: server.address().port, publicUrl: base,
-    close: () => new Promise(r => { clearInterval(timer); for (const c of wss.clients) c.terminate(); server.closeAllConnections?.(); server.close(() => { db.close(); r(); }); }),
+    server, lobby, db, port: server.address().port, publicUrl: base, close,
+    /** Arrêt propre : les parties en cours sont écrites sur disque (droits 600), puis reprises au démarrage. */
+    shutdown: async () => {
+      const snap = lobby.snapshot();
+      if (snapshotPath && snap.games.length) {
+        writeFileSync(`${snapshotPath}.tmp`, JSON.stringify(snap), { mode: 0o600 });
+        renameSync(`${snapshotPath}.tmp`, snapshotPath);
+        log?.(`Parties en cours sauvegardées : ${snap.games.length}`);
+      }
+      await close();
+    },
   };
 }
 
@@ -146,8 +176,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const srv = await startServer({
     port: +(env.PORT ?? 8787), host: env.HOST ?? '127.0.0.1', publicUrl: env.PUBLIC_URL || null, dev: env.DEV === '1',
     origins: env.ORIGINS ? env.ORIGINS.split(',').map(s => s.trim()) : null, trustProxy: env.TRUST_PROXY === '1',
-    dbPath: env.DB_PATH ?? 'dojo.db', discord: { clientId: env.DISCORD_CLIENT_ID, clientSecret: env.DISCORD_CLIENT_SECRET },
+    dbPath: env.DB_PATH ?? 'dojo.db', snapshotPath: env.SNAPSHOT_PATH, discord: { clientId: env.DISCORD_CLIENT_ID, clientSecret: env.DISCORD_CLIENT_SECRET },
   });
-  // Arrêt propre. À venir (étape 4) : écrire les parties en cours sur disque pour les reprendre au démarrage.
-  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => srv.close().then(() => process.exit(0)));
+  // Arrêt propre (déploiement, systemctl restart) : les parties en cours survivent
+  let stopping = false;
+  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { if (!stopping) { stopping = true; srv.shutdown().then(() => process.exit(0)); } });
 }

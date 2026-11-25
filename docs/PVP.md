@@ -33,8 +33,8 @@ Navigateur (site statique)  ⇄ WebSocket (wss) ⇄  Serveur Node 20 (Pi 4, 4 Go
 - Arrêt propre (`SIGTERM` : déploiement, `systemctl restart`) : les parties en cours sont écrites sur disque, puis rejouées au démarrage à partir de `config + answers`. Coupure brutale (courant, plantage) : les parties en cours sont annulées, sans effet sur l'Elo.
 - Le bouton « Rapport » n'est disponible qu'une fois la partie terminée.
 
-### Fuite par le temps de réponse (à traiter)
-Le moteur ne pose une question de contre (`offerCounter`) que si le joueur a un contre possible. Un adversaire attentif voit donc, à la durée de l'attente, si l'on avait un contre en main. Parade prévue : en partie à distance, une fenêtre de contre de durée aléatoire, même sans contre possible (crochet `noCounter` de l'agent).
+### Fuite par le temps de réponse
+Le moteur ne pose une question de contre (`offerCounter`) que si le joueur a un contre possible : l'adversaire devinerait, à la durée de l'attente, qu'on avait un contre en main. Parade en place : sans contre possible, l'agent distant marque une pause aléatoire (0,8 à 2 s, `counterDelay`). Limite : une longue réflexion devant un vrai contre reste visible.
 
 ## Identification
 - Discord OAuth2 (scope `identify`, avec `state` contre le CSRF). On garde : identifiant Discord, pseudo, date de création du compte (déduite de l'identifiant).
@@ -65,7 +65,7 @@ Point faible : **la carte SD** (usure en écriture). Il faut un SSD en USB pour 
 1. ✅ `viewFor` + `RemoteAgent` + tests (`src/pvp/`, `node test/pvp.mjs`).
 2. ✅ Serveur WebSocket (`server/`, paquet `ws`) : salons, invitation à usage unique (15 min), jeton de siège provisoire, reprise et connexion remplacée, forfait après 3 min, nettoyage, limites (origine, 8 connexions par IP, 10 messages/s, 16 Ko par message, 100 salons). Client de test : `npm install` puis `node server/index.mjs` → http://127.0.0.1:8787, deux onglets. Tests : `node test/server.mjs`.
 3. ✅ Discord OAuth (`server/auth.mjs`) et SQLite (`server/db.mjs`, paquet `better-sqlite3`) : sessions par cookie (haché en base, 30 jours glissants, prolongées au plus une fois par jour), déconnexion de tous les appareils, sièges liés au compte (reprise automatique sur un autre appareil), 1 salon ou partie à la fois, 10 salons par heure, annulation d'un salon. Connexion factice `DEV=1`, refusée hors 127.0.0.1 ou en HTTPS. Les secrets Discord sont dans un fichier `.env` créé à la main sur le Pi (pas dans Git ni dans GitHub).
-4. Salons, liens d'invitation, reconnexion, pendule, nettoyage, limites.
+4. ✅ Pendule (20 min par joueur, +5 s par réponse, ne s'écoule que pendant ses questions ; défaite au temps), pause sans contre possible, parties terminées enregistrées en base (table `games` : résultat + `config`/`answers` pour les rejouer), arrêt propre : parties en cours écrites dans `parties-en-cours.json` (droits 600, à côté de la base), reprises au redémarrage puis fichier supprimé ; moteur modifié entre-temps → parties annulées sans effet sur l'Elo. Tests : `node test/lifecycle.mjs`.
 5. Interface PvP dans `ui.js` (lobby, partie à distance).
 6. Mode deck ouvert, puis classé (Glicko-2, âge du compte), puis tournois.
 7. Déploiement sur le Pi (service systemd, proxy wss, sauvegardes).

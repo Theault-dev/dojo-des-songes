@@ -26,6 +26,20 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+CREATE TABLE IF NOT EXISTS games (
+  id           TEXT PRIMARY KEY,
+  mode         TEXT NOT NULL,
+  p0           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  p1           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  winner       INTEGER,               -- 0, 1 ou NULL (nul, partie interrompue)
+  outcome      TEXT NOT NULL,         -- 'result' | 'forfeit' | 'time' | 'aborted'
+  scores       TEXT,                  -- JSON [Renommée J1, Renommée J2]
+  replay       TEXT NOT NULL,         -- JSON { config, answers } : de quoi rejouer la partie
+  started_at   INTEGER NOT NULL,
+  finished_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS games_p0 ON games(p0);
+CREATE INDEX IF NOT EXISTS games_p1 ON games(p1);
 `;
 
 /** Date de création d'un compte Discord, lue dans son identifiant (snowflake). */
@@ -49,6 +63,8 @@ export function openDb(path = 'dojo.db', { now = () => Date.now() } = {}) {
     deleteSession: db.prepare('DELETE FROM sessions WHERE token_hash = ?'),
     deleteUserSessions: db.prepare('DELETE FROM sessions WHERE user_id = ?'),
     purge: db.prepare('DELETE FROM sessions WHERE expires_at <= ?'),
+    insertGame: db.prepare('INSERT OR REPLACE INTO games (id, mode, p0, p1, winner, outcome, scores, replay, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
+    game: db.prepare('SELECT * FROM games WHERE id = ?'),
   };
 
   return {
@@ -76,6 +92,12 @@ export function openDb(path = 'dojo.db', { now = () => Date.now() } = {}) {
     deleteSession: tokenHash => q.deleteSession.run(tokenHash).changes,
     deleteUserSessions: userId => q.deleteUserSessions.run(userId).changes,
     purgeSessions: () => q.purge.run(now()).changes,
+    /** Partie terminée : une seule écriture (~1 Ko), en fin de partie. */
+    saveGame(g) {
+      q.insertGame.run(g.id, g.mode, g.players[0], g.players[1], g.winner ?? null, g.outcome, g.scores ? JSON.stringify(g.scores) : null,
+        JSON.stringify({ config: g.config, answers: g.answers }), g.startedAt, g.finishedAt);
+    },
+    game: id => q.game.get(id),
     close: () => db.close(),
   };
 }

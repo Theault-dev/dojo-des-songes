@@ -404,7 +404,9 @@ export class Game {
    */
   async offerCounter(pid, ev) {
     const opts = FX.counterOptions(this, pid, ev);
-    if (!opts.length) return false;
+    // Partie à distance : sans contre possible, l'agent peut marquer un temps (sinon l'adversaire
+    // devinerait à la durée de l'attente que l'on avait un contre en main)
+    if (!opts.length) { await this.agents[pid].noCounter?.(this, pid, ev); return false; }
     const choice = await this.chooseOption(pid, 'counter', `Contrer « ${ev.label} » ?`, [
       ...opts.map(o => ({ id: o.id, label: o.label, card: o.card, ev })),
       { id: 'no', label: 'Ne pas contrer' },

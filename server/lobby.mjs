@@ -8,7 +8,10 @@
 //   { type: 'cancel' }                                  → ferme son salon en attente
 //   { type: 'answer', seq, answer }                     → réponse à 'ask'
 // Le serveur envoie : hello, created, waiting, cancelled, start, state,
-// ask, event, opponent, over, replaced, error. Voir docs/PVP.md.
+// ask, clock, event, opponent, over, replaced, error. Voir docs/PVP.md.
+//
+// Pendule : chaque joueur dispose d'un temps total (+ un incrément par
+// réponse) qui ne s'écoule que pendant ses questions ; à zéro, il perd.
 //
 // Le siège est lié au compte : se connecter depuis un autre appareil
 // reprend la partie (la connexion la plus récente gagne).
@@ -26,6 +29,10 @@ export const DEFAULTS = {
   finishedTtl: 5 * MIN,     // salon terminé gardé pour une reprise tardive
   rate: 10, burst: 30,      // messages par seconde par connexion (seau à jetons)
   roomsPerHour: 10,         // salons créés par compte et par heure
+  clockBank: 20 * MIN,      // temps de réflexion par joueur et par partie
+  clockIncrement: 5000,     // temps rendu à chaque réponse
+  counterDelay: [800, 2000],// pause (ms) quand aucun contre n'est possible : cache qu'on en avait un
+  version: null,            // version du moteur : une partie sauvegardée n'est reprise que par le même moteur
 };
 const MODES = new Set(['casu', 'open']);
 
@@ -57,7 +64,7 @@ export class Lobby {
   constructor(opts = {}) {
     this.o = { ...DEFAULTS, ...opts };
     this.now = opts.now ?? (() => Date.now());
-    this.onFinished = opts.onFinished ?? (() => {});   // (résumé de partie) → base de données, plus tard
+    this.onFinished = opts.onFinished ?? (() => {});   // (résumé de partie) → base de données
     this.rooms = new Map();     // id → salon
     this.invites = new Map();   // haché d'invitation → salon
     this.byUser = new Map();    // compte → { room, pid } (salon en attente ou partie en cours)
@@ -162,14 +169,41 @@ export class Lobby {
 
   async start(room) {
     room.status = 'playing';
+    room.startedAt = this.now();
     const [a, b] = room.seats;
-    const seed = await mixSeed(room.serverSeed, [a.seed, b.seed]);
-    room.rg = createRemoteGame({
-      decks: [a.deck, b.deck], names: [a.name, b.name], seed, openDecks: room.mode === 'open',
-      send: (pid, m) => this.toSeat(room, pid, m),
-    });
+    room.seed = await mixSeed(room.serverSeed, [a.seed, b.seed]);
+    room.clock = { remaining: [this.o.clockBank, this.o.clockBank], running: null, since: null };
     for (const pid of [0, 1]) this.toSeat(room, pid, { type: 'start', you: pid, names: [a.name, b.name], mode: room.mode, commit: room.commit });
+    this.launch(room);
+  }
+
+  /** Lance le moteur (en rejouant `replay` d'abord, après un redémarrage du serveur). */
+  launch(room, replay = []) {
+    const [a, b] = room.seats, [lo, hi] = this.o.counterDelay;
+    room.rg = createRemoteGame({
+      decks: [a.deck, b.deck], names: [a.name, b.name], seed: room.seed, openDecks: room.mode === 'open', replay,
+      send: (pid, m) => this.toSeat(room, pid, m),
+      counterDelay: () => lo + Math.random() * (hi - lo),
+      onAsk: pid => { room.clock.running = pid; room.clock.since = this.now(); this.sendClock(room); },
+      onAnswer: pid => {
+        const c = room.clock;
+        c.remaining[pid] = Math.max(0, c.remaining[pid] - (this.now() - c.since)) + this.o.clockIncrement;
+        c.running = null; c.since = null;
+        this.sendClock(room);
+      },
+    });
     room.rg.run().then(result => this.finish(room, { result }), err => this.finish(room, { aborted: 'erreur du moteur', detail: String(err?.message ?? err) }));
+  }
+
+  /** Temps restant de chaque joueur, à l'instant présent. */
+  clockNow(room) {
+    const c = room.clock, t = this.now();
+    return c.remaining.map((x, pid) => (c.running === pid ? Math.max(0, x - (t - c.since)) : x));
+  }
+
+  sendClock(room, only = null) {
+    const msg = { type: 'clock', remaining: this.clockNow(room), running: room.clock.running };
+    for (const pid of only == null ? [0, 1] : [only]) this.toSeat(room, pid, msg);
   }
 
   finish(room, over) {
@@ -187,7 +221,16 @@ export class Lobby {
       if (s?.conn) this.send(s.conn, msg);
       else if (s) this.lastOver.set(s.userId, { msg, at: this.now() });
     }
-    if (g) try { this.onFinished({ id: room.id, mode: room.mode, names: room.seats.map(s => s.name), config: g.config, answers: g.s.answers, ...over }); } catch { /* journalisation seulement */ }
+    if (g) {
+      const outcome = over.result ? 'result' : over.reason === 'time' ? 'time' : over.forfeit != null ? 'forfeit' : 'aborted';
+      try {
+        this.onFinished({
+          id: room.id, mode: room.mode, players: room.seats.map(s => s.userId), names: room.seats.map(s => s.name),
+          winner: over.result ? over.result.winner : over.winner ?? null, outcome, scores: over.result?.scores ?? null,
+          config: g.config, answers: g.s.answers, startedAt: room.startedAt, finishedAt: room.finishedAt,
+        });
+      } catch (e) { console.error('Enregistrement de la partie :', e.message); }
+    }
   }
 
   toSeat(room, pid, msg) { const s = room.seats[pid]; if (s?.conn) this.send(s.conn, msg); }
@@ -204,6 +247,7 @@ export class Lobby {
     const [a, b] = room.seats;
     this.send(st.conn, { type: 'start', you: pid, names: [a.name, b.name], mode: room.mode, commit: room.commit, resumed: true });
     room.rg.reconnect(pid);
+    this.sendClock(room, pid);
     this.toSeat(room, 1 - pid, { type: 'opponent', connected: true });
   }
 
@@ -218,6 +262,7 @@ export class Lobby {
   answer(st, msg) {
     const s = st.seat;
     if (!s || s.room.status !== 'playing') return this.error(st, 'not-playing');
+    if (this.outOfTime(s.room)) return;
     const r = s.room.rg.answer(s.pid, { seq: msg.seq, answer: msg.answer });
     if (!r.ok) this.error(st, r.error, { seq: msg.seq });
   }
@@ -230,12 +275,61 @@ export class Lobby {
         this.toSeat(room, 0, { type: 'error', error: 'invite-expired' });
         this.drop(room);
       } else if (room.status === 'playing') {
+        if (this.outOfTime(room)) continue;
         const gone = room.seats.findIndex(s => s.leftAt != null && t - s.leftAt >= this.o.grace);
-        if (gone >= 0) this.finish(room, { forfeit: gone, winner: 1 - gone });
+        if (gone >= 0) this.finish(room, { forfeit: gone, winner: 1 - gone, reason: 'disconnect' });
       } else if (room.status === 'over' && t - room.finishedAt >= this.o.finishedTtl) this.drop(room);
     }
     for (const [u, list] of this.created) if (list.every(x => x <= t - 60 * MIN)) this.created.delete(u);
     for (const [u, x] of this.lastOver) if (t - x.at >= this.o.finishedTtl) this.lastOver.delete(u);
+  }
+
+  /** Pendule tombée : le joueur qui devait répondre perd. */
+  outOfTime(room) {
+    const pid = room.clock?.running;
+    if (pid == null || this.clockNow(room)[pid] > 0) return false;
+    this.finish(room, { forfeit: pid, winner: 1 - pid, reason: 'time' });
+    return true;
+  }
+
+  // ── Arrêt et redémarrage du serveur ─────────────────────
+  /** Parties en cours, de quoi les reprendre : configuration, réponses, pendules. */
+  snapshot() {
+    const games = [];
+    for (const r of this.rooms.values()) {
+      if (r.status !== 'playing' || !r.rg || r.rg.replaying) continue;
+      games.push({
+        id: r.id, mode: r.mode, serverSeed: r.serverSeed, commit: r.commit, seed: r.seed, startedAt: r.startedAt,
+        seats: r.seats.map(s => ({ userId: s.userId, name: s.name, deck: s.deck, seed: s.seed })),
+        answers: [...r.rg.game.s.answers], remaining: this.clockNow(r),
+      });
+    }
+    return { version: this.o.version, savedAt: this.now(), games };
+  }
+
+  /**
+   * Reprend les parties d'un instantané. Les joueurs ont `grace` pour revenir (leurs pages se
+   * reconnectent seules). Si le moteur a changé, les parties sont annulées, sans effet sur l'Elo.
+   */
+  async restore(snap) {
+    const out = { restored: 0, aborted: 0 };
+    for (const x of snap?.games ?? []) {
+      const room = {
+        id: x.id, mode: x.mode, status: 'playing', createdAt: x.startedAt, startedAt: x.startedAt, invite: null, inviteHash: null, inviteExpires: 0,
+        serverSeed: x.serverSeed, commit: x.commit, seed: x.seed, rg: null, over: null, finishedAt: null,
+        seats: x.seats.map(s => ({ ...s, conn: null, leftAt: this.now() })),
+        clock: { remaining: [...x.remaining], running: null, since: null },
+      };
+      this.rooms.set(room.id, room);
+      room.seats.forEach((s, pid) => this.byUser.set(s.userId, { room, pid }));
+      if (snap.version !== this.o.version) { this.finish(room, { aborted: 'mise à jour du serveur' }); out.aborted++; continue; }
+      this.launch(room, x.answers);
+      // Le rejeu est immédiat (aucune attente) : on le laisse aller au bout
+      for (let i = 0; i < 100_000 && room.rg.replaying && !room.over; i++) await new Promise(r => setImmediate(r));
+      if (room.rg?.replaying) { this.finish(room, { aborted: 'reprise impossible' }); out.aborted++; continue; }
+      if (!room.over) out.restored++;
+    }
+    return out;
   }
 
   /** Les comptes de ce salon n'y sont plus rattachés. */
