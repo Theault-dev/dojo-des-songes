@@ -167,6 +167,14 @@ class UI {
       if (this.screen === 'setup') this.renderSetup();
     });
     setInterval(() => this.tickClock(), 500);
+    // Pages légales : liens affichés seulement si le site les sert (pas dans l'artifact claude.ai)
+    this.legal = false;
+    if (/^https?:$/.test(location.protocol)) {
+      fetch('/conditions/').then(r => (r.ok ? r.text() : '')).then(t => {
+        this.legal = t.includes('<title>Conditions d');
+        if (this.legal && this.screen === 'setup') this.renderSetup();
+      }).catch(() => {});
+    }
     this.renderSetup();
   }
 
@@ -243,6 +251,7 @@ class UI {
           </div>
         </div>
         ${this.pvpHTML(valid)}
+        ${this.legal ? '<footer class="site-foot"><a href="/conditions">Conditions d\'utilisation</a> · <a href="/confidentialite">Politique de confidentialité</a></footer>' : ''}
       </section>`;
     for (const id of ['pvpDeck', 'pvpMode']) $(`#${id}`)?.addEventListener('change', e => { this.prefs[id] = e.target.value; this.savePrefs(); });
     for (const id of ['speed', 'first', 'me', 'bot']) $(`#${id}`)?.addEventListener('change', e => { this.prefs[id] = e.target.value; this.savePrefs(); });

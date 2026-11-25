@@ -1,0 +1,34 @@
+#!/bin/sh
+# Déploiement du site (lancé par GitHub Actions, compte dojo-deploy).
+# Reçoit sur stdin soit index.html seul (ancien format), soit une archive .tar.gz du dossier dist/.
+# Crée une release, en vérifie le contenu, puis bascule "current" de façon atomique ; garde les 5 dernières.
+# À installer en root : install -o root -g root -m 755 dojo-deploy /usr/local/bin/dojo-deploy
+set -eu
+BASE=/var/www/dreamland
+REL=$BASE/releases/$(date +%Y%m%d-%H%M%S)
+TMP=$(mktemp)
+trap 'rm -f "$TMP" "$TMP.lst"' EXIT
+fail() { rm -rf "$REL"; echo "$1" >&2; exit 1; }
+
+head -c 20000000 > "$TMP"
+mkdir -p "$REL"
+if [ "$(head -c 2 "$TMP" | od -An -tx1 | tr -d ' \n')" = "1f8b" ]; then
+    # Archive : 60 Mo décompressés au plus, 200 entrées au plus,
+    # uniquement des fichiers et dossiers ordinaires, chemins relatifs sans « .. »
+    [ "$(gzip -dc "$TMP" 2>/dev/null | head -c 60000001 | wc -c)" -le 60000000 ] || fail "Archive trop grosse"
+    tar -tzvf "$TMP" > "$TMP.lst" 2>/dev/null || fail "Archive illisible"
+    [ "$(wc -l < "$TMP.lst")" -le 200 ] || fail "Trop de fichiers"
+    if cut -c1 "$TMP.lst" | grep -qv '^[-d]$'; then fail "Liens et fichiers spéciaux refusés"; fi
+    if tar -tzf "$TMP" | grep -qE '(^/|(^|/)\.\.(/|$))'; then fail "Chemin refusé"; fi
+    tar -xzf "$TMP" -C "$REL" --no-same-owner --no-same-permissions || fail "Extraction impossible"
+else
+    cp "$TMP" "$REL/index.html"
+fi
+chmod -R u=rwX,go=rX "$REL"
+if [ ! -s "$REL/index.html" ] || ! grep -qi '</script>' "$REL/index.html"; then
+    fail "Fichier invalide"
+fi
+ln -sfn "$REL" "$BASE/current.tmp"
+mv -T "$BASE/current.tmp" "$BASE/current"
+ls -1dt "$BASE"/releases/* | tail -n +6 | xargs -r rm -rf
+echo "OK $REL"

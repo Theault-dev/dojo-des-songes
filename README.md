@@ -58,3 +58,6 @@ Puis publier `dist/index.html` avec l'outil Artifact (URL ci-dessus).
 - Soutiens : 2 zones, empilables, les couverts comptent comme face cachée ; mots-clés Team définitifs mais l'effet exige le Soutien visible.
 - Rejoins-nous : Aura ≤ nuit ; Sauvé in extremis : Aura ≤ nuit + 1.
 - Ouvert : Jung (copie de capacité de Lieu).
+## Pages légales et déploiement (25/11/2026)
+- `server/legal.mjs` : conditions d'utilisation et politique de confidentialité. `node build.mjs` les génère dans `dist/conditions/index.html` et `dist/confidentialite/index.html` (nginx les sert sur `/conditions` et `/confidentialite` sans configuration). Tant que le jeu en ligne n'est pas sur la branche, les textes l'annoncent « à venir », sans liens vers `/contact` ni `/compte`. Le nom du responsable vient de la variable GitHub `OPERATOR_NAME` (facultative).
+- Déploiement : le workflow envoie une archive `.tar.gz` de `dist/` au compte `dojo-deploy` du Pi. Le script côté Pi est versionné dans `deploy/dojo-deploy` (accepte aussi l'ancien envoi d'un `index.html` seul ; refuse liens, chemins absolus ou `..`, archives de plus de 200 fichiers ou 60 Mo). À installer en root avant le premier déploiement : `install -o root -g root -m 755 deploy/dojo-deploy /usr/local/bin/dojo-deploy`.
