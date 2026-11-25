@@ -1,0 +1,170 @@
+/* ══ Mobile (portrait, ≤ 700 px) ═══════════════════════════════════════════
+   Le plateau tient sur un écran, sans défilement : cartes miniatures (taille liée à la hauteur de l'écran),
+   en-tête sur deux lignes, camp adverse en miroir (son Arène touche le combat), Main en bas, barre de
+   décision compacte. Journal = volet qui se déplie (bouton ☰). Appui long sur une carte = carte en grand. */
+[data-uid], [data-insp], [data-def] { -webkit-touch-callout: none; }
+
+@media (max-width: 700px) {
+  :root { --ch: 52px; --card-h: var(--ch); --card-w: calc(var(--ch) * .72); }
+  @supports (height: 1dvh) { :root { --ch: clamp(36px, 6.8dvh, 64px); } }
+  html { -webkit-text-size-adjust: 100%; }
+  body { font-size: 14px; -webkit-tap-highlight-color: transparent;
+    padding-left: max(8px, env(safe-area-inset-left, 0px)); padding-right: max(8px, env(safe-area-inset-right, 0px)); }
+  [data-uid], [data-insp], [data-def] { -webkit-user-select: none; user-select: none; touch-action: manipulation; }
+  select, input, textarea { font-size: 16px; }
+  kbd { display: none; }
+  .btn { min-height: 38px; }
+  .btn.small { min-height: 32px; }
+
+  /* ── Partie : une seule page, sans défilement ── */
+  html:has(.game), body:has(.game) { overflow: hidden; height: 100%; }
+  body:has(.game) { padding-block: 0; margin: 0; }
+  .game { display: flex; flex-direction: column; gap: 4px; height: 100vh; padding-bottom: env(safe-area-inset-bottom, 0px); box-sizing: border-box; }
+  @supports (height: 1dvh) { .game { height: 100dvh; } }
+  .board { flex: 1 1 auto; min-height: 0; gap: 4px; overflow: hidden; }
+
+  /* ── En-tête : [Decks · nuits · outils] / [Vous · phase · Bot] ── */
+  .topbar { position: static; flex: none; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 3px 6px; padding-block: 6px 4px;
+    grid-template-areas: "brand nights tools" "me phase bot"; }
+  .brand { grid-area: brand; } .brand .btn { min-height: 28px; padding: 2px 10px; }
+  .nights { grid-area: nights; justify-self: center; gap: 2px; }
+  .tools { grid-area: tools; gap: 4px; }
+  .phase { grid-area: phase; justify-items: center; text-align: center; min-width: 0; }
+  .phase-name { font-size: 12px; line-height: 1.2; }
+  .first { display: none; }
+  .scores { display: contents; }
+  .score.me { grid-area: me; } .score.bot { grid-area: bot; justify-self: end; }
+  .score { padding: 1px 8px; border-radius: 6px; column-gap: 5px; } .score .who { font-size: 10px; } .score .pts { font-size: 16px; } .score .unit { display: none; }
+  .moon { width: 19px; height: 19px; font-size: 9px; }
+  .icon-btn { width: 28px; height: 28px; font-size: 11px; }
+  .btn.forfeit { font-size: 0; width: 28px; height: 28px; min-height: 0; padding: 0; border-radius: 50%; display: grid; place-items: center; }
+  .btn.forfeit::after { content: "⚑"; font-size: 12px; }
+  .toasts { top: 64px; bottom: auto; right: max(8px, env(safe-area-inset-right, 0px)); }
+  .toast { max-width: 240px; padding: 5px 9px; font-size: 12px; }
+
+  /* ── Camps : une ligne de compteurs, l'Arène, puis [Soutiens · Réserve · Lieu] ── */
+  .side { flex: none; padding: 4px 6px; gap: 3px; border-radius: 10px; }
+  .side-head { flex-wrap: nowrap; gap: 4px; justify-content: flex-start; align-items: center; }
+  .side-head h2 { display: none; }
+  .counts { flex-wrap: nowrap; gap: 3px; overflow: hidden; min-width: 0; }
+  .count { font-size: 8.5px; padding: 1px 6px; white-space: nowrap; flex: none; } .count b { font-size: 9.5px; }
+  .count.ctrl { order: -1; } .team { font-size: 8.5px; padding: 0 6px; flex: none; }
+  .side-body { grid-template-columns: auto minmax(0, 1fr) auto; gap: 3px 4px; align-items: stretch;
+    grid-template-areas: "arena arena arena" "supports reserve lieu" "hand hand hand"; }
+  .side-body > .arena { grid-area: arena; } .side-body > .reserve { grid-area: reserve; }
+  .side-body > .supports { grid-area: supports; } .side-body > .lieu { grid-area: lieu; }
+  .side-body > .opp-hand { grid-area: hand; }
+  .side.opp .side-body { grid-template-areas: "hand hand hand" "supports reserve lieu" "arena arena arena"; }
+  /* Intitulés de zone : texte vertical à gauche, sans coûter de hauteur */
+  .zone { display: flex; align-items: center; gap: 3px; }
+  .zone h3 { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 7px; letter-spacing: 0; flex: none; white-space: nowrap; }
+  .opp-hand h3 small { font-size: inherit; }
+  .zone .row { flex: 1 1 auto; flex-wrap: nowrap; overflow-x: auto; gap: 3px; scrollbar-width: none; align-content: center; }
+  .zone .row::-webkit-scrollbar { display: none; }
+  .zone.arena { border: 1px solid var(--line); border-radius: 8px; padding: 3px 4px; min-height: calc(var(--card-h) + 8px); background: color-mix(in srgb, var(--ink) 45%, transparent); }
+  .empty { padding: 0; font-size: 9px; white-space: nowrap; }
+  .lieu { padding: 2px 6px; border-radius: 6px; align-self: center; max-width: 30vw; }
+  .lieu-name { font-size: 8.5px; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lieu ol { display: none; }
+
+  /* ── Cartes miniatures (taille liée à la hauteur de l'écran ; l'appui long les agrandit) ── */
+  .card { box-sizing: border-box; padding: 2px 3px; gap: 1px; border-radius: 5px; }
+  .card.small { --card-w: calc(var(--ch) * .6); --card-h: calc(var(--ch) * .84); }
+  .card.back { --card-w: 13px; --card-h: 19px; min-height: 19px; border-radius: 3px; }
+  .card .card-top { min-height: 15px; }
+  .badge { min-width: 15px; height: 15px; padding: 0 3px; font-size: 9px; border-radius: 8px; }
+  .rank { font-size: 10px; }
+  .card .type, .card-sub, .card-num, .card-combo, .card-kw, .card-foot, .kw-add-strip, .down-label, .card-state { display: none; }
+  .card-name { font-size: 7.5px; line-height: 1.1; -webkit-line-clamp: 3; }
+  .markers span { font-size: 8px; padding: 1px 2px; }
+  .new-dot { width: 7px; height: 7px; }
+
+  /* ── Combat : une ligne par camp (combattant · Kicks · Puissance) ── */
+  .combat { flex: none; padding: 3px 6px; gap: 3px; border-radius: 10px; }
+  .no-combat { padding: 0; font-size: 10px; }
+  .combat-head { font-size: 9px; } .combat-head span:not(.stage) { display: none; }
+  .stage { font-size: 9px; }
+  .fight-row { grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; padding: 1px 3px; }
+  .fight-row .kicks { grid-column: auto; order: 0; flex-wrap: nowrap; overflow-x: auto; gap: 3px; scrollbar-width: none; }
+  .fight-row .fighter .card { --card-w: calc(var(--ch) * .6); --card-h: calc(var(--ch) * .84); }
+  .power { justify-items: center; text-align: center; gap: 1px; min-width: 58px; }
+  .pow { font-size: 22px; }
+  .pow-label, .pips { display: none; }
+  .combo { font-size: 8.5px; padding: 1px 4px; }
+  .mod { font-size: 9px; }
+  .tug { height: 4px; }
+
+  /* ── Main ── */
+  .hand { order: 4; flex: none; padding: 3px 6px; gap: 0; display: flex; align-items: center; }
+  .hand h3 { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 6.5px; letter-spacing: 0; white-space: nowrap; margin-right: 3px; }
+  .hand .legend { display: none; }
+  .hand .row { flex: 1 1 auto; flex-wrap: nowrap; overflow-x: auto; gap: 0; padding: 5px 2px 2px; scrollbar-width: none; }
+  .hand .row::-webkit-scrollbar { display: none; }
+  .hand .card { --card-h: calc(var(--ch) * 1.15); --card-w: calc(var(--ch) * .8); margin-left: -4px; }
+  .hand .card:first-child { margin-left: 0; }
+  .hand .card .card-foot { display: grid; padding: 4px 2px 1px; } .hand .card-hint { font-size: 7px; }
+  .hand .card.selected, .hand .card.choosable:hover { transform: translateY(-5px); }
+  /* Ordre de sélection (mulligan) sur les cartes de la Main */
+  .hand .card[data-order]::after { content: attr(data-order); position: absolute; top: 1px; right: 1px; z-index: 3; width: 14px; height: 14px; border-radius: 50%;
+    background: var(--dawn); color: var(--dawn-ink); font: 700 9px/14px var(--f-mono); text-align: center; }
+
+  /* ── Barre de décision : titre, aides, boutons ── */
+  .prompt { order: 5; flex: none; position: static; max-height: 38dvh; padding: 6px 8px; border-radius: 10px; box-shadow: none; }
+  .prompt-body { gap: 4px; }
+  .prompt-head { align-items: flex-start; }
+  .prompt-head .btn { min-height: 26px; padding: 2px 10px; font-size: 11px; }
+  .prompt-title { font-size: 12.5px; line-height: 1.25; }
+  .hint { font-size: 10.5px; line-height: 1.3; }
+  .buttons { gap: 5px; }
+  .buttons .btn { flex: 1 1 auto; min-height: 32px; padding: 4px 12px; font-size: 12px; }
+  .prompt .row.opts.dup { display: none; }   /* cartes déjà visibles et touchables sur le plateau */
+  /* Choix de cartes (Songe, Fosse…) : côte à côte, à la taille des cartes de la Main */
+  .prompt .row.opts { flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 4px; }
+  .prompt .row.opts .card { --card-h: calc(var(--ch) * 1.15); --card-w: calc(var(--ch) * .8); }
+  .prompt .row.opts .card .card-foot { display: grid; padding: 4px 2px 1px; } .prompt .row.opts .card-hint { font-size: 7px; }
+  .about { flex-wrap: nowrap; gap: 8px; } .about-btns { flex: 1 1 0; min-width: 0; }
+  .prompt-body.waiting { font-size: 11px; }
+
+  /* ── Journal : volet qui se déplie (☰), inspecteur remplacé par l'appui long ── */
+  .rail { position: fixed; left: 6px; right: 6px; bottom: 6px; z-index: 35; display: none; max-height: 60dvh; }
+  body.log-open .rail { display: flex; }
+  .inspector { display: none; }
+  .log-wrap { padding: 8px 12px; box-shadow: 0 -10px 30px -6px #000; }
+  .log-toggle { cursor: pointer; padding-bottom: 0; }
+  .log-head { padding-block: 2px; }
+  .log { display: grid; max-height: 44dvh; margin-top: 6px; }
+  .tabs { padding-bottom: 0; }
+
+  /* ── Fenêtres, accueil ── */
+  .modal { padding: 10px; }
+  .modal-card { padding: 16px; max-height: 86vh; }
+  .modal .close { width: 40px; height: 40px; top: 4px; right: 4px; }
+  .setup { padding-block: 20px 16px; gap: 20px; }
+  .setup h1 { font-size: clamp(34px, 11vw, 48px); }
+  .lede { font-size: 15px; }
+  .mydecks, .match, .artbox { padding: 12px; }
+  .match .opts { flex-direction: column; align-items: stretch; gap: 10px; }
+  .opts label { justify-content: space-between; gap: 12px; }
+  .opts select { max-width: 60%; }
+  .match-go .btn.big { width: 100%; }
+}
+
+/* ── Aperçu d'une carte en grand (appui long) ─────────────────────────── */
+.zoom { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; touch-action: none; overscroll-behavior: contain;
+  padding: max(12px, env(safe-area-inset-top, 0px)) 12px max(12px, env(safe-area-inset-bottom, 0px));
+  background: color-mix(in srgb, var(--ink) 84%, transparent); backdrop-filter: blur(6px); animation: zoomIn .16s ease-out;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+@keyframes zoomIn { from { opacity: 0; } }
+.zoom-card { width: min(100%, 460px); max-height: 100%; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; display: grid; gap: 10px; }
+.zoom .bigcard { padding: 14px; gap: 10px; box-shadow: 0 20px 50px -10px #000, inset 0 0 0 4px var(--panel), inset 0 0 0 5px color-mix(in srgb, var(--fam) 35%, transparent); }
+.zoom .bigcard.has-art .bc-top { grid-template-columns: 1fr; justify-items: stretch; }
+.zoom .bc-art { width: auto; height: min(44vh, calc((100vw - 56px) * 88 / 63)); max-width: 100%; justify-self: center; }
+.zoom .bigcard h3 { font-size: 26px; }
+.zoom .bc-sub { font-size: 16px; }
+.zoom .bc-text { font-size: 17px; line-height: 1.45; padding: 12px; }
+.zoom .bc-cond { font-size: 13px; }
+.zoom .bc-kw span { font-size: 12px; padding: 3px 8px; }
+.zoom .bc-combo { font-size: 14px; }
+.zoom .big-stat { width: 52px; height: 52px; font-size: 26px; }
+.zoom .bigcard footer { font-size: 13px; }
+.zoom-hint { margin: 0; text-align: center; font-size: 12px; color: var(--muted); letter-spacing: .06em; }
