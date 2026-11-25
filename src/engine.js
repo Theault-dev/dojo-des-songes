@@ -63,7 +63,7 @@ export class Game {
   makePlayer(pid, deck, name) {
     const mk = zone => id => ({ uid: ++this.uidSeq, id, owner: pid, zone, faceDown: false, markers: [], tmp: {} });
     return {
-      pid, name, deck, deckId: deck.id, lieuId: deck.lieu, lieuUsed: [false, false, false], lieuUsedNight: false,
+      pid, name, deck, deckId: deck.id, lieuId: deck.lieu, lieuUsed: [false, false, false], lieuUsedNight: false, lieuRevealed: false,
       groupe: deck.groupe.map(mk('groupe')), songe: deck.songe.map(mk('songe')),
       hand: [], reserve: [], arena: [], supports: [], fosse: [], exil: [],
       renommee: 0, gold: 0, teams: new Set(),
@@ -140,8 +140,12 @@ export class Game {
   // ── Journal / événements / agents ─────────────────────────
   emit(type, data = {}) { try { this.onEvent(type, data); } catch (e) { /* l'interface ne bloque jamais le moteur */ } }
 
-  log(text, pid = null) {
-    this.s.log.push({ night: this.s.night, text, pid });
+  /**
+   * `secret` : ligne qui révèle une carte au seul joueur `secret.to` ; les autres lisent `secret.masked`
+   * (partie à distance, voir src/pvp/view.js). Les parties locales affichent `text`.
+   */
+  log(text, pid = null, secret = null) {
+    this.s.log.push(secret ? { night: this.s.night, text, pid, to: secret.to, masked: secret.masked } : { night: this.s.night, text, pid });
     this.onUpdate();
   }
 
@@ -331,7 +335,7 @@ export class Game {
     const cands = p.songe.filter(c => filter(this.def(c)));
     const uniq = [...new Map(cands.map(c => [c.id, c])).values()];
     const pick = await this.chooseCard(pid, 'search', title, uniq);
-    if (pick) { this.put(pick, 'hand'); this.log(`${p.name} ajoute ${this.label(pick)} à sa Main.`, pid); }
+    if (pick) { this.put(pick, 'hand'); this.log(`${p.name} ajoute ${this.label(pick)} à sa Main.`, pid, { to: pid, masked: `${p.name} ajoute une carte de son Songe à sa Main.` }); }
     this.shuffle(p.songe);
     return pick;
   }
@@ -682,6 +686,7 @@ export class Game {
     for (const pid of [0, 1]) {
       const p = this.p(pid);
       p.hand.filter(c => this.def(c).type === 'P').forEach(c => this.put(c, 'reserve'));
+      p.lieuRevealed = true;
       this.log(`${p.name} révèle son Lieu : ${this.lieu(pid).name}.`, pid);
     }
   }

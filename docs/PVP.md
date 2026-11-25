@@ -1,0 +1,71 @@
+# Joueur contre joueur — conception
+
+Branche `feature/pvp`. Décisions validées le 25/11/2026.
+
+## Principes
+- **Serveur qui fait autorité** : le serveur Node (sur le Raspberry Pi) fait tourner `src/engine.js`. Les navigateurs ne font qu'afficher et répondre aux questions.
+- **Aucune information cachée côté client** : ni graine RNG, ni ordre des pioches, ni main adverse, ni carte face cachée (dont `sd.hidden`).
+- **Pas de P2P, pas de chat, pas d'emotes, pas de voix ni de vidéo.**
+- **Compte Discord obligatoire** pour tous les modes (pas d'invités).
+
+## Formats
+| Mode | Particularité |
+|---|---|
+| Casu | Non classé, salon privé par lien d'invitation |
+| Casu deck ouvert | La vue contient la decklist adverse (nombre de chaque carte), jamais l'ordre |
+| Classé | Matchmaking par Elo/Glicko-2, compte Discord âgé d'au moins 7 jours |
+| Tournoi | Rondes suisses puis top 8, appariements par le serveur (pas de lien) |
+
+## Architecture
+```
+Navigateur (site statique)  ⇄ WebSocket (wss) ⇄  Serveur Node 20 (Pi 4, 4 Go)
+  - affiche viewFor(pid)                           - engine.js inchangé
+  - envoie { seq, réponse }                        - RemoteAgent (ask → WebSocket)
+                                                   - salons, matchmaking, pendule
+                                                   - SQLite (WAL) : comptes, sessions, parties, Elo
+```
+
+### Moteur
+- `viewFor(game, pid)` : projection de l'état pour un joueur. Pioches et main adverse réduites à des nombres, cartes cachées remplacées par des cartes vierges, `uid` renumérotés par joueur (on ne suit pas une carte cachée d'une zone à l'autre), pas de `config.seed`, pas de `trace`.
+- `RemoteAgent.ask(game, pid, req)` : envoie la question (avec un `seq` croissant), attend la réponse, **vérifie qu'elle figure dans `req.options`** (et respecte `min`/`max`), sinon la rejette.
+- Graine : `seed = H(graine_serveur ‖ graine_J1 ‖ graine_J2)`. `H(graine_serveur)` est publié avant la partie, la graine serveur est révélée à la fin (mélange vérifiable).
+- Parties en cours **en RAM** (pour ménager la carte SD). Sur la SD on n'écrit que : comptes, sessions, Elo et, en fin de partie, `config + answers + résultat` (~1 Ko).
+- Arrêt propre (`SIGTERM` : déploiement, `systemctl restart`) : les parties en cours sont écrites sur disque, puis rejouées au démarrage à partir de `config + answers`. Coupure brutale (courant, plantage) : les parties en cours sont annulées, sans effet sur l'Elo.
+- Le bouton « Rapport » n'est disponible qu'une fois la partie terminée.
+
+### Fuite par le temps de réponse (à traiter)
+Le moteur ne pose une question de contre (`offerCounter`) que si le joueur a un contre possible. Un adversaire attentif voit donc, à la durée de l'attente, si l'on avait un contre en main. Parade prévue : en partie à distance, une fenêtre de contre de durée aléatoire, même sans contre possible (crochet `noCounter` de l'agent).
+
+## Identification
+- Discord OAuth2 (scope `identify`, avec `state` contre le CSRF). On garde : identifiant Discord, pseudo, date de création du compte (déduite de l'identifiant).
+- Session : jeton aléatoire de 256 bits dans un cookie `HttpOnly; Secure; SameSite=Lax`. En base, seulement son hash et `expires_at` (30 jours, prolongée à chaque usage). Révocation possible.
+- WebSocket : on vérifie le cookie et l'en-tête `Origin` à l'ouverture de la connexion.
+- RGPD : données minimales, suppression du compte possible (les replays restent, anonymisés).
+
+## Salons, liens et changement d'appareil
+- Lien d'invitation : jeton de 128 bits (hash en base), **usage unique**, expire au bout de 15 minutes.
+- Une fois l'invitation acceptée, le **siège est lié au compte Discord**, plus au lien. Se connecter avec le même compte sur un autre appareil renvoie dans la partie, avec l'état et la question en attente. La connexion la plus récente gagne et l'ancienne reçoit « Partie ouverte sur un autre appareil ».
+- Déconnexion : la pendule continue, délai de grâce de 3 à 5 minutes, puis forfait.
+- Nettoyage toutes les minutes : invitations expirées, salons vides, parties inactives (forfait ou annulation). Les parties non classées terminées sont supprimées après quelques jours.
+- Lien spectateur (plus tard) : lecture seule, différé, informations cachées masquées jusqu'à la fin.
+
+## Protection du Pi
+- 1 partie en cours par compte, nombre limité de salons ou invitations créés par heure.
+- Plafond global de parties simultanées (environ 100), puis file d'attente.
+- Limite de requêtes par IP sur `/auth/*` et à l'ouverture des WebSockets.
+- Limite de messages par connexion WebSocket ; une connexion qui dépasse est fermée.
+- Âge minimum du compte Discord : 7 jours pour le mode classé.
+- Node limité en mémoire (`--max-old-space-size`, `MemoryMax` dans systemd). Le Pi n'a pas de swap.
+
+## Matériel (Pi 4 Model B, 4 Go, carte SD de 16 Go, Node 20.19)
+Mesure du moteur sur PC (Ryzen 5800X) : 15 ms par partie complète, 4,3 Mo pour 25 parties, environ 154 décisions par partie. Sur le Pi 4, il faut compter un facteur 5 à 8 plus lent : 50 joueurs simultanés restent très en dessous de ses capacités.
+Point faible : **la carte SD** (usure en écriture). Il faut un SSD en USB pour la base, ou au minimum SQLite en WAL, des journaux en RAM et une sauvegarde quotidienne de la base.
+
+## Étapes
+1. ✅ `viewFor` + `RemoteAgent` + tests (`src/pvp/`, `node test/pvp.mjs`).
+2. Serveur WebSocket minimal : une partie casu entre deux onglets (sans authentification, en local).
+3. Discord OAuth, sessions, SQLite.
+4. Salons, liens d'invitation, reconnexion, pendule, nettoyage, limites.
+5. Interface PvP dans `ui.js` (lobby, partie à distance).
+6. Mode deck ouvert, puis classé (Glicko-2, âge du compte), puis tournois.
+7. Déploiement sur le Pi (service systemd, proxy wss, sauvegardes).

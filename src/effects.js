@@ -53,7 +53,7 @@ async function fetchKeyword(g, pid, kw, selfName) {
     cands.map(c => ({ id: c.uid, label: `${g.label(c)} — ${where[c.zone]}`, card: c })));
   const pick = cands.find(c => c.uid === id);
   if (pick) {
-    if (g.def(pick).type !== 'P') { g.put(pick, 'hand'); g.log(`${g.pname(pid)} ajoute ${g.label(pick)} à sa Main.`, pid); }
+    if (g.def(pick).type !== 'P') { const from = where[pick.zone]; g.put(pick, 'hand'); g.log(`${g.pname(pid)} ajoute ${g.label(pick)} à sa Main.`, pid, from === 'Réserve' ? null : { to: pid, masked: `${g.pname(pid)} ajoute une carte de son ${from} à sa Main.` }); }
     else if (pick.zone === 'reserve') g.log(`${g.label(pick)} est déjà dans la Réserve.`, pid);
     else g.recruit(pid, pick);
   }
@@ -598,7 +598,8 @@ export const LIEU_ACTIONS = {
           { id: 'top', label: 'La laisser au-dessus du Groupe (recrutée au prochain Crépuscule)', card: top },
           { id: 'bottom', label: 'La mettre en dessous du Groupe', card: top }]);
         if (ans === 'bottom') { p.groupe.pop(); p.groupe.unshift(top); }
-        g.log(`${g.label(top)} ${ans === 'bottom' ? 'passe en dessous du' : 'reste au-dessus du'} Groupe.`, pid);
+        g.log(`${g.label(top)} ${ans === 'bottom' ? 'passe en dessous du' : 'reste au-dessus du'} Groupe.`, pid,
+          { to: pid, masked: `La 1ʳᵉ carte du Groupe de ${g.pname(pid)} ${ans === 'bottom' ? 'passe en dessous' : 'reste au-dessus'}.` });
       } },
   ],
 };
