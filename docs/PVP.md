@@ -63,7 +63,7 @@ Point faible : **la carte SD** (usure en écriture). Il faut un SSD en USB pour 
 
 ## Étapes
 1. ✅ `viewFor` + `RemoteAgent` + tests (`src/pvp/`, `node test/pvp.mjs`).
-2. Serveur WebSocket minimal : une partie casu entre deux onglets (sans authentification, en local).
+2. ✅ Serveur WebSocket (`server/`, paquet `ws`) : salons, invitation à usage unique (15 min), jeton de siège provisoire, reprise et connexion remplacée, forfait après 3 min, nettoyage, limites (origine, 8 connexions par IP, 10 messages/s, 16 Ko par message, 100 salons). Client de test : `npm install` puis `node server/index.mjs` → http://127.0.0.1:8787, deux onglets. Tests : `node test/server.mjs`.
 3. Discord OAuth, sessions, SQLite.
 4. Salons, liens d'invitation, reconnexion, pendule, nettoyage, limites.
 5. Interface PvP dans `ui.js` (lobby, partie à distance).

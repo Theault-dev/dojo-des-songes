@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dojo PvP — client de test</title>
+<style>
+  :root { color-scheme: dark; --bg: #14182e; --panel: #1d2242; --line: #2e3562; --text: #e8e9f3; --muted: #9aa0c3; --accent: #f0b84a; --bad: #ff7a7a; --ok: #7be0a0; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { padding: 10px 16px; border-bottom: 1px solid var(--line); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; }
+  #status { color: var(--muted); }
+  main { padding: 12px 16px; display: grid; gap: 12px; max-width: 1100px; margin: auto; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  h2 { font-size: 14px; margin: 0 0 6px; color: var(--accent); }
+  label { display: block; margin: 6px 0 2px; color: var(--muted); }
+  input, select, textarea { width: 100%; background: #0f1226; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px; font: inherit; }
+  textarea { height: 110px; font-family: ui-monospace, monospace; font-size: 12px; }
+  button { background: #2b3270; color: var(--text); border: 1px solid #4450a0; border-radius: 6px; padding: 6px 10px; font: inherit; cursor: pointer; margin: 3px 3px 0 0; }
+  button:hover { background: #36409a; }
+  button.sel { background: var(--accent); color: #1a1a1a; }
+  button.blocked { opacity: .6; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .row > * { flex: 1 1 300px; }
+  .zone { margin: 4px 0; } .zone b { color: var(--muted); font-weight: 500; margin-right: 6px; }
+  .card { display: inline-block; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; margin: 2px; background: #121633; }
+  .card.hidden { color: var(--muted); }
+  .stat { color: var(--accent); font-weight: 600; }
+  #log { max-height: 220px; overflow: auto; font-size: 12px; color: var(--muted); }
+  #log div:last-child { color: var(--text); }
+  .err { color: var(--bad); } .ok { color: var(--ok); }
+  code { background: #0f1226; padding: 1px 4px; border-radius: 4px; word-break: break-all; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header><h1>Dojo des Songes — PvP (client de test)</h1><span id="status">Connexion…</span></header>
+<main>
+  <section id="setup">
+    <h2>Nouvelle partie</h2>
+    <div class="row">
+      <div>
+        <label for="name">Pseudo</label><input id="name" maxlength="24">
+        <label for="mode">Mode</label>
+        <select id="mode"><option value="casu">Casu</option><option value="open">Casu, deck ouvert</option></select>
+        <label for="preset">Deck d'exemple</label><select id="preset"></select>
+      </div>
+      <div><label for="deck">Decklist</label><textarea id="deck"></textarea></div>
+    </div>
+    <p><button id="create">Créer un salon</button><button id="join" hidden>Rejoindre la partie</button></p>
+    <p id="invite-box" hidden>Lien à envoyer à l'adversaire (usage unique, 15 min) :<br><code id="invite"></code> <button id="copy">Copier</button></p>
+    <p id="setup-msg"></p>
+  </section>
+
+  <section id="game" hidden>
+    <div class="row">
+      <div id="opp"></div>
+      <div id="me"></div>
+    </div>
+    <div id="combat"></div>
+  </section>
+
+  <section id="ask" hidden><h2 id="ask-title"></h2><div id="ask-opts"></div><p id="ask-msg" class="err"></p></section>
+  <section id="over" hidden></section>
+  <section><h2>Journal</h2><div id="log"></div></section>
+</main>
+<script>
+'use strict';
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const KEY = 'dojo-pvp-seat';   // par onglet : deux onglets = deux joueurs
+const invite = new URLSearchParams(location.search).get('invite');
+let ws, view = null, ask = null, selected = new Set(), started = false;
+
+$('#name').value = sessionStorage.getItem('dojo-pvp-name') || (invite ? 'Joueur 2' : 'Joueur 1');
+if (invite) { $('#create').hidden = true; $('#join').hidden = false; $('#mode').disabled = true; }
+
+fetch('/dev/decks').then(r => r.json()).then(decks => {
+  $('#preset').innerHTML = decks.map((d, i) => `<option value="${i}">${esc(d.name)}</option>`).join('');
+  $('#preset').onchange = () => { $('#deck').value = decks[$('#preset').value].text; };
+  $('#preset').value = invite ? Math.min(1, decks.length - 1) : 0; $('#preset').onchange();
+});
+
+const randomSeed = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
+const send = m => ws?.readyState === 1 && ws.send(JSON.stringify(m));
+const player = () => { sessionStorage.setItem('dojo-pvp-name', $('#name').value); return { name: $('#name').value, deckText: $('#deck').value, seed: randomSeed() }; };
+$('#create').onclick = () => send({ type: 'create', mode: $('#mode').value, ...player() });
+$('#join').onclick = () => send({ type: 'join', invite, ...player() });
+$('#copy').onclick = () => navigator.clipboard.writeText($('#invite').textContent);
+
+function connect() {
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  ws.onopen = () => {
+    $('#status').textContent = 'Connecté';
+    const t = sessionStorage.getItem(KEY);
+    if (t) send({ type: 'resume', token: t });
+  };
+  ws.onclose = e => { $('#status').textContent = `Déconnecté (${e.code}) — nouvelle tentative…`; if (e.code !== 4000) setTimeout(connect, 1500); };
+  ws.onmessage = e => handle(JSON.parse(e.data));
+}
+
+const ERRORS = {
+  'invite-invalid': 'Invitation inconnue, déjà utilisée ou expirée.', 'invite-expired': 'Personne n\'a rejoint à temps : le salon est fermé.',
+  'deck-invalid': 'Deck refusé.', 'bad-name': 'Pseudo invalide.', 'server-full': 'Serveur complet, réessayez plus tard.',
+  'token-invalid': 'Partie introuvable (terminée ou expirée).', 'already-seated': 'Vous êtes déjà dans une partie.',
+};
+
+function handle(m) {
+  switch (m.type) {
+    case 'created':
+      sessionStorage.setItem(KEY, m.token);
+      $('#invite').textContent = `${location.origin}/?invite=${m.invite}`;
+      $('#invite-box').hidden = false;
+      $('#setup-msg').textContent = 'En attente de l\'adversaire…';
+      break;
+    case 'joined': sessionStorage.setItem(KEY, m.token); break;
+    case 'waiting': $('#setup-msg').textContent = 'Salon créé, en attente de l\'adversaire (le lien affiché à la création reste valable).'; break;
+    case 'start':
+      started = true;
+      $('#setup').hidden = true; $('#game').hidden = false;
+      $('#status').textContent = `${m.names[m.you]} contre ${m.names[1 - m.you]} — ${m.mode === 'open' ? 'deck ouvert' : 'casu'}${m.resumed ? ' (reprise)' : ''}`;
+      if (invite) history.replaceState(null, '', '/');
+      break;
+    case 'state': view = m.view; render(); break;
+    case 'ask': ask = m; selected = new Set(); renderAsk(); break;
+    case 'event': break;
+    case 'opponent': $('#status').textContent = m.connected ? 'Adversaire reconnecté' : `Adversaire déconnecté — forfait à ${new Date(m.graceUntil).toLocaleTimeString()}`; break;
+    case 'replaced': $('#status').textContent = 'Partie ouverte sur un autre appareil ou onglet.'; break;
+    case 'over': ask = null; renderAsk(); renderOver(m); break;
+    case 'error':
+      if (m.error === 'token-invalid') sessionStorage.removeItem(KEY);
+      if (m.seq != null) { if (answered?.seq === m.seq) { ask = answered; renderAsk(); } $('#ask-msg').textContent = `Réponse refusée : ${m.error}`; break; }
+      $('#setup-msg').innerHTML = `<span class="err">${esc(ERRORS[m.error] ?? m.error)}${m.detail ? ' ' + esc(m.detail) : ''}</span>`;
+      break;
+  }
+}
+
+const card = c => {
+  if (!c) return '';
+  if (c.hidden) return '<span class="card hidden">🂠 cachée</span>';
+  const stat = c.type === 'P' ? ` <span class="stat">${c.aura}</span>` : c.type === 'K' ? ` <span class="stat">${c.force}</span>${c.rang ? ' ' + esc(c.rang) : ''}` : '';
+  return `<span class="card" title="${esc(c.kw.join(', '))}">${c.faceDown ? '▼ ' : ''}${esc(c.label)}${stat}</span>`;
+};
+const zone = (name, cards) => `<div class="zone"><b>${name}</b>${cards.length ? cards.map(card).join('') : '—'}</div>`;
+
+function renderPlayer(p, mine) {
+  const lieu = p.lieu ? esc(p.lieu.name) : '<i>caché</i>';
+  return `<h2>${mine ? 'Vous' : 'Adversaire'} : ${esc(p.name)}</h2>
+    <div>Renommée <span class="stat">${p.renommee}</span> · Contrôle <span class="stat">${p.control}</span> · Lieu ${lieu}</div>
+    <div class="zone"><b>Pioches</b>Groupe ${p.counts.groupe} · Songe ${p.counts.songe} · Main ${p.counts.hand}</div>
+    ${p.hand ? zone('Main', p.hand) : ''}
+    ${zone('Réserve', p.reserve)}${zone('Arène', p.arena)}
+    ${zone('Soutiens', p.supports.map(pile => pile[pile.length - 1]))}
+    ${zone('Fosse', p.fosse)}
+    ${p.decklist ? `<div class="zone"><b>Decklist</b>${p.decklist.groupe.length} Persos, ${p.decklist.songe.length} cartes de Songe</div>` : ''}`;
+}
+
+function render() {
+  const me = view.players[view.you], opp = view.players[1 - view.you];
+  $('#opp').innerHTML = renderPlayer(opp, false);
+  $('#me').innerHTML = renderPlayer(me, true);
+  $('#combat').innerHTML = view.combat ? `<h2>Combat — ${esc(view.combat.stage)}</h2>` + Object.entries(view.combat.sides).map(([pid, sd]) =>
+    `<div class="zone"><b>${esc(view.players[pid].name)}</b>${card(sd.fighter)} Puissance <span class="stat">${sd.power}</span> · Kicks : ${sd.kicks.map(card).join('') || '—'}${sd.hidden ? ' · ' + card(sd.hidden) : ''}</div>`).join('')
+    : `<div class="zone"><b>Nuit ${view.night}</b>${esc(view.phase)}</div>`;
+  $('#log').innerHTML = view.log.slice(-60).map(l => `<div>N${l.night} — ${esc(l.text)}</div>`).join('');
+  $('#log').scrollTop = 1e9;
+}
+
+function renderAsk() {
+  $('#ask').hidden = !ask;
+  $('#ask-msg').textContent = '';
+  if (!ask) return;
+  $('#ask-title').textContent = ask.title;
+  const opts = ask.options.map(o => `<button data-id="${esc(o.id)}" class="${selected.has(o.id) ? 'sel' : ''} ${o.blocked ? 'blocked' : ''}" title="${o.blocked ? esc(typeof o.blocked === 'string' ? o.blocked : 'impossible') : ''}">${esc(o.label)}${o.card && !o.card.hidden && o.card.type === 'P' ? ` (${o.card.aura})` : ''}</button>`).join('');
+  $('#ask-opts').innerHTML = opts + (ask.multi ? `<p><button data-act="ok">Valider (${selected.size}, ${ask.min} à ${ask.max})</button></p>` : '');
+}
+
+// La question disparaît dès la réponse ; elle revient si le serveur la refuse
+let answered = null;
+function answer(a) { answered = ask; send({ type: 'answer', seq: ask.seq, answer: a }); ask = null; renderAsk(); }
+
+$('#ask-opts').onclick = e => {
+  const b = e.target.closest('button');
+  if (!b || !ask) return;
+  if (b.dataset.act === 'ok') return answer([...selected]);
+  const id = b.dataset.id;
+  if (!ask.multi) return answer(id);
+  selected.has(id) ? selected.delete(id) : selected.size < ask.max && selected.add(id);
+  renderAsk();
+};
+
+async function renderOver(m) {
+  const me = view?.you ?? 0;
+  let text;
+  if (m.forfeit != null) text = m.forfeit === me ? 'Défaite par forfait.' : 'Victoire : l\'adversaire a abandonné (déconnexion).';
+  else if (m.aborted) text = `Partie interrompue : ${esc(m.aborted)}.`;
+  else { const r = m.result; text = r.winner == null ? 'Égalité' : r.winner === me ? 'Victoire !' : 'Défaite.'; text += ` Renommée ${r.scores.join(' – ')}.`; }
+  const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(m.serverSeed)))].map(b => b.toString(16).padStart(2, '0')).join('');
+  const fair = digest === m.commit;
+  $('#over').hidden = false;
+  $('#over').innerHTML = `<h2>Fin de partie</h2><p>${text}</p>
+    <p class="${fair ? 'ok' : 'err'}">${fair ? '✔ Mélange vérifié' : '✘ La graine révélée ne correspond pas à l\'engagement'} : SHA-256(graine serveur) = engagement publié avant la partie.</p>
+    <p><button onclick="sessionStorage.removeItem('${KEY}'); location.href='/'">Nouvelle partie</button></p>`;
+  sessionStorage.removeItem(KEY);
+}
+
+connect();
+</script>
+</body>
+</html>
