@@ -32,6 +32,12 @@ jobs:
                   chmod 600 ~/.ssh/id_ed25519
                   printf '%s\n' "$KNOWN_HOST" > ~/.ssh/known_hosts
 
+            # Serveur de jeu (branches qui l'ont) : déployé avant le site, qui s'en sert
+            - name: Deploy game server
+              if: hashFiles('server/index.mjs') != ''
+              run: |
+                  tar -czf - package.json package-lock.json server src | ssh -p 2222 -o StrictHostKeyChecking=yes dojo-deploy@harruis.fr server
+
             - name: Deploy to Raspberry Pi
               # Tout le dossier dist/ (page du jeu + pages légales), en archive : voir deploy/dojo-deploy
               run: tar -czf - -C dist . | ssh -p 2222 -o StrictHostKeyChecking=yes dojo-deploy@harruis.fr
@@ -40,4 +46,5 @@ jobs:
               run: |
                   curl -fsSI https://dreamland.harruis.fr/
                   curl -fsSIL https://dreamland.harruis.fr/conditions
-                  curl -fsSIL https://dreamland.harruis.fr/confidentialite
+                  curl -fsSIL https://dreamland.harruis.fr/confidentialite
+                  if [ -f server/index.mjs ]; then curl -fsS https://dreamland.harruis.fr/auth/me -o /dev/null -w '%{http_code}\n' | grep -qx 401; fi

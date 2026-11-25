@@ -147,9 +147,22 @@ export async function startServer({
     if ((perIp.get(ip) ?? 0) >= MAX_CONN_PER_IP) return reject(socket, 429, 'Too Many Requests');
     perIp.set(ip, (perIp.get(ip) ?? 0) + 1);
     socket.once('close', () => { const n = (perIp.get(ip) ?? 1) - 1; n > 0 ? perIp.set(ip, n) : perIp.delete(ip); });
-    wss.handleUpgrade(req, socket, head, ws => lobby.attach(adapt(ws), { id: user.id, name: user.name }));
+    wss.handleUpgrade(req, socket, head, ws => {
+      ws.isAlive = true;
+      ws.on('pong', () => { ws.isAlive = true; });
+      lobby.attach(adapt(ws), { id: user.id, name: user.name });
+    });
   });
 
+  // Battement de cœur : une connexion qui ne répond plus (réseau coupé) est fermée, le délai de grâce démarre
+  const heartbeat = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (!ws.isAlive) { ws.terminate(); continue; }
+      ws.isAlive = false;
+      try { ws.ping(); } catch { /* déjà fermée */ }
+    }
+  }, 30_000);
+  heartbeat.unref();
   let lastPurge = 0;
   const timer = setInterval(() => {
     lobby.sweep();
@@ -159,7 +172,7 @@ export async function startServer({
   }, sweepEvery);
   timer.unref();
   log?.(`Dojo PvP : ${base}${dev ? ' (client de test, connexion factice)' : ''}`);
-  const close = () => new Promise(r => { clearInterval(timer); for (const c of wss.clients) c.terminate(); server.closeAllConnections?.(); server.close(() => { db.close(); r(); }); });
+  const close = () => new Promise(r => { clearInterval(timer); clearInterval(heartbeat); for (const c of wss.clients) c.terminate(); server.closeAllConnections?.(); server.close(() => { db.close(); r(); }); });
   return {
     server, lobby, db, port: server.address().port, publicUrl: base, close,
     /** Arrêt propre : les parties en cours sont écrites sur disque (droits 600), puis reprises au démarrage. */

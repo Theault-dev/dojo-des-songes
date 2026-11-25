@@ -1,34 +1,87 @@
 #!/bin/sh
-# Déploiement du site (lancé par GitHub Actions, compte dojo-deploy).
-# Reçoit sur stdin soit index.html seul (ancien format), soit une archive .tar.gz du dossier dist/.
-# Crée une release, en vérifie le contenu, puis bascule "current" de façon atomique ; garde les 5 dernières.
+# Déploiement (lancé par GitHub Actions avec la clé du compte dojo-deploy, commande forcée).
+#   ssh dojo-deploy@… [site]  < archive.tar.gz (ou index.html seul) : le site statique
+#   ssh dojo-deploy@… server  < archive.tar.gz                     : le serveur de jeu
+# Chaque envoi devient une release vérifiée ; "current" bascule de façon atomique.
 # À installer en root : install -o root -g root -m 755 dojo-deploy /usr/local/bin/dojo-deploy
 set -eu
-BASE=/var/www/dreamland
-REL=$BASE/releases/$(date +%Y%m%d-%H%M%S)
+MODE=${SSH_ORIGINAL_COMMAND:-site}
+STAMP=$(date +%Y%m%d-%H%M%S)
 TMP=$(mktemp)
+REL=
 trap 'rm -f "$TMP" "$TMP.lst"' EXIT
-fail() { rm -rf "$REL"; echo "$1" >&2; exit 1; }
+fail() { [ -n "$REL" ] && rm -rf "$REL"; echo "$1" >&2; exit 1; }
 
-head -c 20000000 > "$TMP"
-mkdir -p "$REL"
-if [ "$(head -c 2 "$TMP" | od -An -tx1 | tr -d ' \n')" = "1f8b" ]; then
-    # Archive : 60 Mo décompressés au plus, 200 entrées au plus,
-    # uniquement des fichiers et dossiers ordinaires, chemins relatifs sans « .. »
+# Archive sûre : 60 Mo décompressés au plus, $1 entrées au plus,
+# uniquement des fichiers et dossiers ordinaires, chemins relatifs sans « .. »
+check_archive() {
     [ "$(gzip -dc "$TMP" 2>/dev/null | head -c 60000001 | wc -c)" -le 60000000 ] || fail "Archive trop grosse"
     tar -tzvf "$TMP" > "$TMP.lst" 2>/dev/null || fail "Archive illisible"
-    [ "$(wc -l < "$TMP.lst")" -le 200 ] || fail "Trop de fichiers"
+    [ "$(wc -l < "$TMP.lst")" -le "$1" ] || fail "Trop de fichiers"
     if cut -c1 "$TMP.lst" | grep -qv '^[-d]$'; then fail "Liens et fichiers spéciaux refusés"; fi
     if tar -tzf "$TMP" | grep -qE '(^/|(^|/)\.\.(/|$))'; then fail "Chemin refusé"; fi
+}
+is_gzip() { [ "$(head -c 2 "$TMP" | od -An -tx1 | tr -d ' \n')" = "1f8b" ]; }
+switch() { ln -sfn "$1" "$2/current.tmp"; mv -T "$2/current.tmp" "$2/current"; }
+
+head -c 20000000 > "$TMP"
+
+case "$MODE" in
+site)
+    BASE=/var/www/dreamland
+    REL=$BASE/releases/$STAMP
+    mkdir -p "$REL"
+    if is_gzip; then
+        check_archive 200
+        tar -xzf "$TMP" -C "$REL" --no-same-owner --no-same-permissions || fail "Extraction impossible"
+    else
+        cp "$TMP" "$REL/index.html"
+    fi
+    chmod -R u=rwX,go=rX "$REL"
+    if [ ! -s "$REL/index.html" ] || ! grep -qi '</script>' "$REL/index.html"; then fail "Fichier invalide"; fi
+    switch "$REL" "$BASE"
+    ls -1dt "$BASE"/releases/* | tail -n +6 | xargs -r rm -rf
+    echo "OK site $REL"
+    ;;
+server)
+    BASE=/opt/dojo-pvp
+    REL=$BASE/releases/$STAMP
+    PREV=$(readlink "$BASE/current" 2>/dev/null || true)
+    is_gzip || fail "Archive attendue"
+    mkdir -p "$REL"
+    check_archive 400
     tar -xzf "$TMP" -C "$REL" --no-same-owner --no-same-permissions || fail "Extraction impossible"
-else
-    cp "$TMP" "$REL/index.html"
-fi
-chmod -R u=rwX,go=rX "$REL"
-if [ ! -s "$REL/index.html" ] || ! grep -qi '</script>' "$REL/index.html"; then
-    fail "Fichier invalide"
-fi
-ln -sfn "$REL" "$BASE/current.tmp"
-mv -T "$BASE/current.tmp" "$BASE/current"
-ls -1dt "$BASE"/releases/* | tail -n +6 | xargs -r rm -rf
-echo "OK $REL"
+    [ -f "$REL/server/index.mjs" ] && [ -f "$REL/package-lock.json" ] || fail "Serveur incomplet"
+    # Dépendances : reprises de la release précédente si le verrou n'a pas changé, sinon npm ci
+    if [ -n "$PREV" ] && [ -d "$PREV/node_modules" ] && cmp -s "$PREV/package-lock.json" "$REL/package-lock.json"; then
+        cp -a "$PREV/node_modules" "$REL/node_modules"
+    else
+        (cd "$REL" && npm ci --omit=dev --no-audit --no-fund --loglevel=error) || fail "npm ci a échoué"
+    fi
+    chmod -R u=rwX,go=rX "$REL"
+    switch "$REL" "$BASE"
+    if ! sudo -n /usr/bin/systemctl restart dojo-server; then
+        [ -n "$PREV" ] && switch "$PREV" "$BASE"
+        fail "Redémarrage impossible (règle sudo installée ?)"
+    fi
+    # Vérification : le serveur répond ; sinon retour à la version précédente
+    ok=
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        sleep 1
+        if node -e "fetch('http://127.0.0.1:8787/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"; then ok=1; break; fi
+    done
+    if [ -z "$ok" ]; then
+        if [ -n "$PREV" ]; then switch "$PREV" "$BASE"; sudo -n /usr/bin/systemctl restart dojo-server || true; fi
+        # Premier déploiement : on garde la release pour pouvoir lire l'erreur
+        [ -n "$PREV" ] && rm -rf "$REL"
+        echo "Le serveur ne répond pas : retour à ${PREV:-aucune version}. Voir : journalctl -u dojo-server" >&2
+        exit 1
+    fi
+    ls -1dt "$BASE"/releases/* | tail -n +4 | xargs -r rm -rf
+    echo "OK server $REL"
+    ;;
+*)
+    echo "Commande inconnue : $MODE" >&2
+    exit 1
+    ;;
+esac

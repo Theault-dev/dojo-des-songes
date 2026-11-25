@@ -1,0 +1,2 @@
+# Le compte de déploiement peut seulement redémarrer le serveur de jeu (installé dans /etc/sudoers.d/dojo-deploy).
+dojo-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart dojo-server

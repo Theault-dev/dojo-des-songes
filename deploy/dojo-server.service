@@ -1,0 +1,49 @@
+# Serveur de jeu en ligne du Dojo des Songes (installé par deploy/setup-pi.sh).
+#   Code      : /opt/dojo-pvp/current   (déployé par GitHub Actions → dojo-deploy server)
+#   Réglages  : /etc/dojo/env           (secrets Discord, SMTP… ; root:root 600, lu par systemd)
+#   Données   : /var/lib/dojo/          (base SQLite, parties en cours à l'arrêt)
+#   Journaux  : journalctl -u dojo-server
+[Unit]
+Description=Dojo des Songes - serveur de jeu en ligne
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dojo
+Group=dojo
+WorkingDirectory=/opt/dojo-pvp/current
+EnvironmentFile=/etc/dojo/env
+Environment=NODE_ENV=production HOST=127.0.0.1 PORT=8787 DB_PATH=/var/lib/dojo/dojo.db ENV_FILE=/dev/null
+ExecStart=/usr/bin/env node --max-old-space-size=192 server/index.mjs
+Restart=on-failure
+RestartSec=3
+# Arrêt propre : SIGTERM, le serveur écrit les parties en cours puis s'arrête
+KillSignal=SIGTERM
+TimeoutStopSec=20
+StateDirectory=dojo
+StateDirectoryMode=0700
+UMask=0077
+MemoryMax=320M
+# Durcissement : le service ne peut écrire que dans /var/lib/dojo
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

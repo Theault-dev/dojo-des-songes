@@ -1301,7 +1301,7 @@ class UI {
     const sel = (id, opts, cur) => `<select id="${id}">${opts.map(([val, l]) => `<option value="${esc(val)}" ${val === cur ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
     if (!valid.some(d => d.id === this.prefs.pvpDeck)) this.prefs.pvpDeck = valid[0]?.id ?? null;
     const msg = v.msg ? `<p class="hint ${v.msg.ok ? 'good' : 'bad'}">${esc(v.msg.ok ?? v.msg.error)}</p>` : '';
-    const legal = '<p class="store-note"><a href="/compte">Mon compte</a> · <a href="/conditions">Conditions d\'utilisation</a> · <a href="/confidentialite">Confidentialité</a> · <a href="/contact">Contact</a></p>';
+    const legal = v.user ? '<p class="store-note"><a href="/compte">Mon compte</a> · <a href="/contact">Contact</a></p>' : '';
     let body;
     if (!v.user) {
       body = `
