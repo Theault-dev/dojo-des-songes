@@ -150,5 +150,8 @@ export function createAuth({ db, publicUrl, discord = {}, devLogin = false, now 
     return true;
   }
 
-  return { handle, userFrom, publicUser, cookieName: COOKIE };
+  /** Ferme la session de cette requête. */
+  function logout(req) { const t = parseCookies(req.headers.cookie)[COOKIE]; if (t && t.length <= 100) db.deleteSession(hash(t)); }
+
+  return { handle, userFrom, publicUser, logout, clearCookie: () => cookie(COOKIE, '', 0), cookieName: COOKIE };
 }

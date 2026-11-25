@@ -70,14 +70,22 @@ export class Lobby {
     this.byUser = new Map();    // compte → { room, pid } (salon en attente ou partie en cours)
     this.created = new Map();   // compte → dates de création de salons (dernière heure)
     this.lastOver = new Map();  // compte → fin de partie non reçue (déconnecté à ce moment-là)
+    this.conns = new Map();     // compte → connexions ouvertes
   }
 
   // ── Connexions ──────────────────────────────────────────
   /** `user` : { id, name } du compte connecté (vérifié par le serveur HTTP avant). */
   attach(conn, user) {
     const st = { conn, user, seat: null, tokens: this.o.burst, last: this.now() };
+    if (!this.conns.has(user.id)) this.conns.set(user.id, new Set());
+    this.conns.get(user.id).add(st);
     conn.on('message', text => this.onMessage(st, text));
-    conn.on('close', () => this.onClose(st));
+    conn.on('close', () => {
+      const set = this.conns.get(user.id);
+      set?.delete(st);
+      if (set && !set.size) this.conns.delete(user.id);
+      this.onClose(st);
+    });
     this.send(conn, { type: 'hello', user: { id: user.id, name: user.name } });
     if (this.byUser.has(user.id)) this.resume(st);
     else if (this.lastOver.has(user.id)) { this.send(conn, this.lastOver.get(user.id).msg); this.lastOver.delete(user.id); }
@@ -222,7 +230,7 @@ export class Lobby {
       else if (s) this.lastOver.set(s.userId, { msg, at: this.now() });
     }
     if (g) {
-      const outcome = over.result ? 'result' : over.reason === 'time' ? 'time' : over.forfeit != null ? 'forfeit' : 'aborted';
+      const outcome = over.result ? 'result' : over.reason === 'time' ? 'time' : over.forfeit != null ? 'forfeit' : 'aborted'; // abandon et déconnexion : 'forfeit'
       try {
         this.onFinished({
           id: room.id, mode: room.mode, players: room.seats.map(s => s.userId), names: room.seats.map(s => s.name),
@@ -282,6 +290,21 @@ export class Lobby {
     }
     for (const [u, list] of this.created) if (list.every(x => x <= t - 60 * MIN)) this.created.delete(u);
     for (const [u, x] of this.lastOver) if (t - x.at >= this.o.finishedTtl) this.lastOver.delete(u);
+  }
+
+  /** Ferme toutes les connexions d'un compte (déconnexion de tous les appareils, suppression). */
+  kickUser(userId, reason = 'déconnecté') {
+    for (const st of [...(this.conns.get(userId) ?? [])]) st.conn.close(4001, reason);
+  }
+
+  /** Compte supprimé : salon fermé, partie en cours perdue par abandon, connexions fermées. */
+  removeUser(userId) {
+    const ref = this.byUser.get(userId);
+    if (ref?.room.status === 'waiting') this.drop(ref.room);
+    else if (ref?.room.status === 'playing') this.finish(ref.room, { forfeit: ref.pid, winner: 1 - ref.pid, reason: 'abandon' });
+    this.lastOver.delete(userId);
+    this.created.delete(userId);
+    this.kickUser(userId, 'compte supprimé');
   }
 
   /** Pendule tombée : le joueur qui devait répondre perd. */

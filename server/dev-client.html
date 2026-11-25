@@ -73,6 +73,7 @@
   <section id="ask" hidden><h2 id="ask-title"></h2><div id="ask-opts"></div><p id="ask-msg" class="err"></p></section>
   <section id="over" hidden></section>
   <section><h2>Journal</h2><div id="log"></div></section>
+<p style="color:var(--muted)"><a href="/compte" style="color:inherit">Mon compte</a> · <a href="/contact" style="color:inherit">Contact</a> · <a href="/conditions" style="color:inherit">Conditions d'utilisation</a> · <a href="/confidentialite" style="color:inherit">Confidentialité</a></p>
 </main>
 <script>
 'use strict';
@@ -108,7 +109,7 @@ const showInvite = (inv, expiresAt) => {
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
   ws.onopen = () => { $('#status').textContent = 'Connecté'; };
-  ws.onclose = e => { $('#status').textContent = `Déconnecté (${e.code}) — nouvelle tentative…`; if (e.code !== 4000) setTimeout(connect, 1500); };
+  ws.onclose = e => { $('#status').textContent = `Déconnecté (${e.code}) — nouvelle tentative…`; if (e.code === 4001) { $('#status').textContent = 'Session fermée : reconnectez-vous.'; return; } if (e.code !== 4000) setTimeout(connect, 1500); };
   ws.onmessage = e => handle(JSON.parse(e.data));
 }
 
@@ -215,6 +216,7 @@ async function renderOver(m) {
   clockMsg = null; $('#clock').textContent = '';
   let text;
   if (m.forfeit != null && m.reason === 'time') text = m.forfeit === me ? 'Défaite au temps.' : 'Victoire au temps : la pendule adverse est tombée.';
+  else if (m.forfeit != null && m.reason === 'abandon') text = m.forfeit === me ? 'Défaite par abandon.' : 'Victoire par abandon : l\'adversaire a quitté le Dojo.';
   else if (m.forfeit != null) text = m.forfeit === me ? 'Défaite par forfait (déconnexion).' : 'Victoire : l\'adversaire ne s\'est pas reconnecté.';
   else if (m.aborted) text = `Partie interrompue : ${esc(m.aborted)}.`;
   else { const r = m.result; text = r.winner == null ? 'Égalité' : r.winner === me ? 'Victoire !' : 'Défaite.'; text += ` Renommée ${r.scores.join(' – ')}.`; }

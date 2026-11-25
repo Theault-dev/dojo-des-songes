@@ -9,6 +9,8 @@
 //   PUBLIC_URL (adresse publique ; défaut http://HOST:PORT),
 //   ORIGINS (origines WebSocket autorisées ; défaut : celle de PUBLIC_URL),
 //   DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET,
+//   SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM, CONTACT_TO (formulaire de contact, voir mail.mjs),
+//   OPERATOR_NAME (nom ou pseudonyme du responsable, affiché dans la politique de confidentialité),
 //   DEV=1 : client de test + connexion factice (refusé hors 127.0.0.1 ou en HTTPS),
 //   TRUST_PROXY=1 : IP lue dans X-Forwarded-For (derrière nginx).
 // ─────────────────────────────────────────────────────────────
@@ -23,6 +25,8 @@ import { WebSocketServer } from 'ws';
 import { Lobby } from './lobby.mjs';
 import { openDb } from './db.mjs';
 import { createAuth } from './auth.mjs';
+import { createPages } from './pages.mjs';
+import { createMailer } from './mail.mjs';
 
 const MAX_CONN_PER_IP = 8;
 const MAX_PAYLOAD = 16 * 1024;
@@ -70,6 +74,7 @@ function limiter(max, windowMs, now) {
 export async function startServer({
   port = 8787, host = '127.0.0.1', publicUrl = null, origins = null, dev = false, trustProxy = false,
   dbPath = 'dojo.db', snapshotPath, discord = {}, lobby: lobbyOpts = {}, sweepEvery = 1000, log = console.log, now = () => Date.now(), fetch,
+  mailer = null, mailEnv = {}, operator = null,
 } = {}) {
   if (dev && (!LOOPBACK.has(host) || publicUrl?.startsWith('https://'))) throw new Error('DEV=1 est réservé au développement local (HOST=127.0.0.1, sans HTTPS).');
   const db = openDb(dbPath, { now });
@@ -86,7 +91,8 @@ export async function startServer({
   const perIp = new Map();
   const authLimit = limiter(AUTH_PER_MIN, 60_000, now);
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD, perMessageDeflate: false }); // pas de compression : attaques mémoire
-  let auth, devPage = null, devDecks = null;
+  let auth, pages, devPage = null, devDecks = null;
+  mailer ??= createMailer(mailEnv, { dev, log });
   if (dev) {
     devPage = await readFile(fileURLToPath(new URL('./dev-client.html', import.meta.url)), 'utf8');
     const { J1, randomDeck, KWS } = await import('../test/decks.mjs');
@@ -107,6 +113,7 @@ export async function startServer({
         await auth.handle(req, res, path, url.searchParams);
         return;
       }
+      if (await pages.handle(req, res, path, url.searchParams, ipOf(req, req.socket))) return;
       if (req.method !== 'GET') return out(405, 'text/plain', 'Method Not Allowed');
       if (path === '/health') return out(200, 'application/json', JSON.stringify({ ok: true, rooms: lobby.stats() }));
       if (dev && path === '/') return out(200, 'text/html; charset=utf-8', devPage);
@@ -121,6 +128,7 @@ export async function startServer({
   await new Promise(r => server.listen(port, host, r));
   const base = publicUrl ?? `http://${host}:${server.address().port}`;
   auth = createAuth({ db, publicUrl: base, discord, devLogin: dev, now, ...(fetch ? { fetch } : {}) });
+  pages = createPages({ db, auth, lobby, mailer, publicUrl: base, operator, devLogin: dev, discord: !!(discord.clientId && discord.clientSecret), now, limiter: (max, win) => limiter(max, win, now) });
   const allowed = origins ?? [new URL(base).origin, ...(dev ? [`http://localhost:${server.address().port}`] : [])];
 
   server.on('upgrade', (req, socket, head) => {
@@ -141,6 +149,7 @@ export async function startServer({
   const timer = setInterval(() => {
     lobby.sweep();
     authLimit.sweep();
+    pages.contactLimit.sweep();
     if (now() - lastPurge > 3_600_000) { lastPurge = now(); db.purgeSessions(); }
   }, sweepEvery);
   timer.unref();
@@ -177,6 +186,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     port: +(env.PORT ?? 8787), host: env.HOST ?? '127.0.0.1', publicUrl: env.PUBLIC_URL || null, dev: env.DEV === '1',
     origins: env.ORIGINS ? env.ORIGINS.split(',').map(s => s.trim()) : null, trustProxy: env.TRUST_PROXY === '1',
     dbPath: env.DB_PATH ?? 'dojo.db', snapshotPath: env.SNAPSHOT_PATH, discord: { clientId: env.DISCORD_CLIENT_ID, clientSecret: env.DISCORD_CLIENT_SECRET },
+    mailEnv: env, operator: env.OPERATOR_NAME || null,
   });
   // Arrêt propre (déploiement, systemctl restart) : les parties en cours survivent
   let stopping = false;

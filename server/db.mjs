@@ -65,7 +65,10 @@ export function openDb(path = 'dojo.db', { now = () => Date.now() } = {}) {
     purge: db.prepare('DELETE FROM sessions WHERE expires_at <= ?'),
     insertGame: db.prepare('INSERT OR REPLACE INTO games (id, mode, p0, p1, winner, outcome, scores, replay, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'),
     game: db.prepare('SELECT * FROM games WHERE id = ?'),
+    deleteUser: db.prepare('DELETE FROM users WHERE id = ?'),
   };
+  // Suppression du compte : sessions effacées (CASCADE), parties gardées sans lien avec le joueur (SET NULL)
+  const deleteUser = db.transaction(id => { q.deleteUserSessions.run(id); return q.deleteUser.run(id).changes; });
 
   return {
     raw: db,
@@ -92,11 +95,13 @@ export function openDb(path = 'dojo.db', { now = () => Date.now() } = {}) {
     deleteSession: tokenHash => q.deleteSession.run(tokenHash).changes,
     deleteUserSessions: userId => q.deleteUserSessions.run(userId).changes,
     purgeSessions: () => q.purge.run(now()).changes,
-    /** Partie terminée : une seule écriture (~1 Ko), en fin de partie. */
+    /** Partie terminée : une seule écriture (~1 Ko), en fin de partie. Les noms de decks (texte libre) ne sont pas gardés. */
     saveGame(g) {
+      const config = { ...g.config, decks: g.config.decks.map(d => ({ lieu: d.lieu, groupe: d.groupe, songe: d.songe })) };
       q.insertGame.run(g.id, g.mode, g.players[0], g.players[1], g.winner ?? null, g.outcome, g.scores ? JSON.stringify(g.scores) : null,
-        JSON.stringify({ config: g.config, answers: g.answers }), g.startedAt, g.finishedAt);
+        JSON.stringify({ config, answers: g.answers }), g.startedAt, g.finishedAt);
     },
+    deleteUser,
     game: id => q.game.get(id),
     close: () => db.close(),
   };
