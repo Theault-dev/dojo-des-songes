@@ -1510,4 +1510,4 @@ const ui = new UI();
 document.addEventListener('change', e => {
   if (e.target.id === 'speed-live') { ui.prefs.speed = e.target.value; ui.savePrefs(); if (ui.bot) ui.bot.delay = SPEEDS[ui.prefs.speed]; }
 });
-window.__dojo = ui; // accès pour les tests automatisés
+window.__dojo = ui; // accès pour les tests automatisés

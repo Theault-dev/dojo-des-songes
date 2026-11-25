@@ -1322,4 +1322,4 @@ export async function afterDamageTriggers(g, att) {
     if (surv && f && g.hasKw(f, 'FANTASY STARS') && c.winners.includes(o) && !sd.damaged)
       await g.activate(pid, surv, 'Survivre une nuit de plus', () => { g.gainFame(pid, 1, 'Survivre une nuit de plus'); g.recruit(pid); });
   }
-}
+}
