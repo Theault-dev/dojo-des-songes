@@ -1,0 +1,81 @@
+// ─────────────────────────────────────────────────────────────
+// Base SQLite : comptes et sessions (les parties en cours restent en RAM).
+// Écritures limitées pour ménager la carte SD du Pi : une session n'est
+// prolongée qu'une fois par jour au plus.
+// ─────────────────────────────────────────────────────────────
+import Database from 'better-sqlite3';
+
+const DAY = 86_400_000;
+export const SESSION_TTL = 30 * DAY;
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS users (
+  id               INTEGER PRIMARY KEY,
+  discord_id       TEXT NOT NULL UNIQUE,
+  name             TEXT NOT NULL,
+  avatar           TEXT,
+  discord_created  INTEGER NOT NULL,   -- création du compte Discord (ms), pour l'âge minimum
+  created_at       INTEGER NOT NULL,
+  last_login       INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash  TEXT PRIMARY KEY,        -- SHA-256 du jeton : le jeton lui-même n'est jamais stocké
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at  INTEGER NOT NULL,
+  expires_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
+`;
+
+/** Date de création d'un compte Discord, lue dans son identifiant (snowflake). */
+export const discordCreated = id => Number((BigInt(id) >> 22n) + 1420070400000n);
+
+export function openDb(path = 'dojo.db', { now = () => Date.now() } = {}) {
+  const db = new Database(path);
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  db.pragma('foreign_keys = ON');
+  db.exec(SCHEMA);
+
+  const q = {
+    userByDiscord: db.prepare('SELECT * FROM users WHERE discord_id = ?'),
+    userById: db.prepare('SELECT * FROM users WHERE id = ?'),
+    insertUser: db.prepare('INSERT INTO users (discord_id, name, avatar, discord_created, created_at, last_login) VALUES (?, ?, ?, ?, ?, ?)'),
+    updateUser: db.prepare('UPDATE users SET name = ?, avatar = ?, last_login = ? WHERE id = ?'),
+    insertSession: db.prepare('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)'),
+    session: db.prepare('SELECT s.expires_at, u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?'),
+    extend: db.prepare('UPDATE sessions SET expires_at = ? WHERE token_hash = ?'),
+    deleteSession: db.prepare('DELETE FROM sessions WHERE token_hash = ?'),
+    deleteUserSessions: db.prepare('DELETE FROM sessions WHERE user_id = ?'),
+    purge: db.prepare('DELETE FROM sessions WHERE expires_at <= ?'),
+  };
+
+  return {
+    raw: db,
+    /** Crée ou met à jour le compte lié à un identifiant Discord. */
+    upsertUser({ discordId, name, avatar = null, created }) {
+      const t = now(), u = q.userByDiscord.get(discordId);
+      if (u) { q.updateUser.run(name, avatar, t, u.id); return q.userById.get(u.id); }
+      const r = q.insertUser.run(discordId, name, avatar, created, t, t);
+      return q.userById.get(r.lastInsertRowid);
+    },
+    createSession(tokenHash, userId) {
+      const t = now();
+      q.insertSession.run(tokenHash, userId, t, t + SESSION_TTL);
+    },
+    /** Compte de la session (null si inconnue ou expirée) ; prolonge la session au plus une fois par jour. */
+    sessionUser(tokenHash) {
+      const r = q.session.get(tokenHash), t = now();
+      if (!r) return null;
+      if (r.expires_at <= t) { q.deleteSession.run(tokenHash); return null; }
+      if (r.expires_at - t < SESSION_TTL - DAY) q.extend.run(t + SESSION_TTL, tokenHash);
+      const { expires_at, ...user } = r;
+      return user;
+    },
+    deleteSession: tokenHash => q.deleteSession.run(tokenHash).changes,
+    deleteUserSessions: userId => q.deleteUserSessions.run(userId).changes,
+    purgeSessions: () => q.purge.run(now()).changes,
+    close: () => db.close(),
+  };
+}

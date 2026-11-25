@@ -64,7 +64,7 @@ Point faible : **la carte SD** (usure en écriture). Il faut un SSD en USB pour 
 ## Étapes
 1. ✅ `viewFor` + `RemoteAgent` + tests (`src/pvp/`, `node test/pvp.mjs`).
 2. ✅ Serveur WebSocket (`server/`, paquet `ws`) : salons, invitation à usage unique (15 min), jeton de siège provisoire, reprise et connexion remplacée, forfait après 3 min, nettoyage, limites (origine, 8 connexions par IP, 10 messages/s, 16 Ko par message, 100 salons). Client de test : `npm install` puis `node server/index.mjs` → http://127.0.0.1:8787, deux onglets. Tests : `node test/server.mjs`.
-3. Discord OAuth, sessions, SQLite.
+3. ✅ Discord OAuth (`server/auth.mjs`) et SQLite (`server/db.mjs`, paquet `better-sqlite3`) : sessions par cookie (haché en base, 30 jours glissants, prolongées au plus une fois par jour), déconnexion de tous les appareils, sièges liés au compte (reprise automatique sur un autre appareil), 1 salon ou partie à la fois, 10 salons par heure, annulation d'un salon. Connexion factice `DEV=1`, refusée hors 127.0.0.1 ou en HTTPS. Les secrets Discord sont dans un fichier `.env` créé à la main sur le Pi (pas dans Git ni dans GitHub).
 4. Salons, liens d'invitation, reconnexion, pendule, nettoyage, limites.
 5. Interface PvP dans `ui.js` (lobby, partie à distance).
 6. Mode deck ouvert, puis classé (Glicko-2, âge du compte), puis tournois.

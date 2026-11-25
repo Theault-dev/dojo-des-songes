@@ -1,18 +1,17 @@
 // ─────────────────────────────────────────────────────────────
 // Salons et parties à distance, indépendants du transport.
 //
-// Une connexion (`conn` : send(texte), close(code, raison), événements
-// 'message' et 'close') envoie des messages JSON :
-//   { type: 'create', name, deck | deckText, seed?, mode? }   → 'created'
-//   { type: 'join', invite, name, deck | deckText, seed? }    → 'start'
-//   { type: 'resume', token }                                  → reprise du siège
-//   { type: 'answer', seq, answer }                            → réponse à 'ask'
-// Le serveur envoie : created, start, state, ask, event, opponent,
-// over, replaced, error. Voir docs/PVP.md.
+// Chaque connexion (`conn` : send(texte), close(code, raison), événements
+// 'message' et 'close') appartient à un compte connecté (`user`). Messages :
+//   { type: 'create', deck | deckText, seed?, mode? }   → 'created'
+//   { type: 'join', invite, deck | deckText, seed? }    → 'joined' puis 'start'
+//   { type: 'cancel' }                                  → ferme son salon en attente
+//   { type: 'answer', seq, answer }                     → réponse à 'ask'
+// Le serveur envoie : hello, created, waiting, cancelled, start, state,
+// ask, event, opponent, over, replaced, error. Voir docs/PVP.md.
 //
-// Sans authentification pour l'instant : le siège est lié à un jeton
-// de siège remis à la création / à l'arrivée (remplacé plus tard par le
-// compte Discord). Seuls les hachés des jetons sont conservés.
+// Le siège est lié au compte : se connecter depuis un autre appareil
+// reprend la partie (la connexion la plus récente gagne).
 // ─────────────────────────────────────────────────────────────
 import { createHash, randomBytes } from 'node:crypto';
 import { validateDeck } from '../src/data.js';
@@ -26,6 +25,7 @@ export const DEFAULTS = {
   grace: 3 * MIN,           // délai de reconnexion avant forfait
   finishedTtl: 5 * MIN,     // salon terminé gardé pour une reprise tardive
   rate: 10, burst: 30,      // messages par seconde par connexion (seau à jetons)
+  roomsPerHour: 10,         // salons créés par compte et par heure
 };
 const MODES = new Set(['casu', 'open']);
 
@@ -33,7 +33,7 @@ const token = (n = 32) => randomBytes(n).toString('base64url');
 const hash = t => createHash('sha256').update(String(t)).digest('hex');
 const isStr = (x, max) => typeof x === 'string' && x.length > 0 && x.length <= max;
 
-/** Pseudo affichable : 1 à 24 caractères, sans caractères de contrôle. */
+/** Nom de deck affichable : 1 à 24 caractères, sans caractères de contrôle. */
 function cleanName(x) {
   if (typeof x !== 'string') return null;
   const n = x.replace(/[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]/g, '').trim().slice(0, 24);
@@ -60,14 +60,20 @@ export class Lobby {
     this.onFinished = opts.onFinished ?? (() => {});   // (résumé de partie) → base de données, plus tard
     this.rooms = new Map();     // id → salon
     this.invites = new Map();   // haché d'invitation → salon
-    this.seats = new Map();     // haché de jeton de siège → { room, pid }
+    this.byUser = new Map();    // compte → { room, pid } (salon en attente ou partie en cours)
+    this.created = new Map();   // compte → dates de création de salons (dernière heure)
+    this.lastOver = new Map();  // compte → fin de partie non reçue (déconnecté à ce moment-là)
   }
 
   // ── Connexions ──────────────────────────────────────────
-  attach(conn) {
-    const st = { conn, seat: null, tokens: this.o.burst, last: this.now() };
+  /** `user` : { id, name } du compte connecté (vérifié par le serveur HTTP avant). */
+  attach(conn, user) {
+    const st = { conn, user, seat: null, tokens: this.o.burst, last: this.now() };
     conn.on('message', text => this.onMessage(st, text));
     conn.on('close', () => this.onClose(st));
+    this.send(conn, { type: 'hello', user: { id: user.id, name: user.name } });
+    if (this.byUser.has(user.id)) this.resume(st);
+    else if (this.lastOver.has(user.id)) { this.send(conn, this.lastOver.get(user.id).msg); this.lastOver.delete(user.id); }
     return st;
   }
 
@@ -86,7 +92,7 @@ export class Lobby {
     switch (msg.type) {
       case 'create': return this.create(st, msg);
       case 'join': return this.join(st, msg);
-      case 'resume': return this.resume(st, msg);
+      case 'cancel': return this.cancel(st);
       case 'answer': return this.answer(st, msg);
       default: return this.error(st, 'bad-message');
     }
@@ -104,51 +110,53 @@ export class Lobby {
   }
 
   // ── Salons ─────────────────────────────────────────────
-  seatFor(st, room, pid, { name, deck, seed }) {
-    const t = token();
-    room.seats[pid] = { name, deck, seed, tokenHash: hash(t), conn: st.conn, leftAt: null };
-    this.seats.set(room.seats[pid].tokenHash, { room, pid });
+  seatFor(st, room, pid, { deck, seed }) {
+    room.seats[pid] = { userId: st.user.id, name: st.user.name, deck, seed, conn: st.conn, leftAt: null };
+    this.byUser.set(st.user.id, { room, pid });
     st.seat = { room, pid };
-    return t;
   }
 
-  /** Contrôles communs à 'create' et 'join' : renvoie { name, deck, seed } ou null (erreur envoyée). */
+  /** Contrôles communs à 'create' et 'join' : renvoie { deck, seed } ou null (erreur envoyée). */
   readPlayer(st, msg) {
-    if (st.seat) { this.error(st, 'already-seated'); return null; }
-    const name = cleanName(msg.name);
-    if (!name) { this.error(st, 'bad-name'); return null; }
+    if (this.byUser.has(st.user.id)) { this.error(st, 'already-in-game'); return null; }
     const { deck, error } = readDeck(msg);
     if (!deck) { this.error(st, 'deck-invalid', { detail: error }); return null; }
     const seed = isStr(msg.seed, 64) ? msg.seed : token(16);
-    return { name, deck, seed };
+    return { deck, seed };
   }
 
   async create(st, msg) {
     const p = this.readPlayer(st, msg);
     if (!p) return;
     if (this.rooms.size >= this.o.maxRooms) return this.error(st, 'server-full');
+    const hourAgo = this.now() - 60 * MIN, recent = (this.created.get(st.user.id) ?? []).filter(t => t > hourAgo);
+    if (recent.length >= this.o.roomsPerHour) return this.error(st, 'too-many-rooms');
+    recent.push(this.now());
+    this.created.set(st.user.id, recent);
     const mode = MODES.has(msg.mode) ? msg.mode : 'casu';
     const invite = token(16), serverSeed = token(32);
     const room = {
-      id: token(9), mode, status: 'waiting', createdAt: this.now(), inviteHash: hash(invite), inviteExpires: this.now() + this.o.inviteTtl,
+      id: token(9), mode, status: 'waiting', createdAt: this.now(), invite, inviteHash: hash(invite), inviteExpires: this.now() + this.o.inviteTtl,
       serverSeed, commit: await commitSeed(serverSeed), seats: [null, null], rg: null, over: null, finishedAt: null,
     };
     this.rooms.set(room.id, room);
     this.invites.set(room.inviteHash, room);
-    const t = this.seatFor(st, room, 0, p);
-    this.send(st.conn, { type: 'created', invite, token: t, mode, commit: room.commit, expiresAt: room.inviteExpires });
+    this.seatFor(st, room, 0, p);
+    this.send(st.conn, { type: 'created', invite, mode, commit: room.commit, expiresAt: room.inviteExpires });
   }
 
   async join(st, msg) {
     // Même réponse pour une invitation inconnue, utilisée ou expirée : rien à deviner
     const room = isStr(msg.invite, 64) ? this.invites.get(hash(msg.invite)) : null;
     if (!room || room.status !== 'waiting' || room.inviteExpires <= this.now()) return this.error(st, 'invite-invalid');
+    if (room.seats[0].userId === st.user.id) return this.error(st, 'own-invite');
     const p = this.readPlayer(st, msg);
     if (!p) return;
     this.invites.delete(room.inviteHash); // usage unique
     room.inviteHash = null;
-    const t = this.seatFor(st, room, 1, p);
-    this.send(st.conn, { type: 'joined', token: t, mode: room.mode, commit: room.commit });
+    room.invite = null;
+    this.seatFor(st, room, 1, p);
+    this.send(st.conn, { type: 'joined', mode: room.mode, commit: room.commit });
     await this.start(room);
   }
 
@@ -169,34 +177,42 @@ export class Lobby {
     room.status = 'over';
     room.over = over;
     room.finishedAt = this.now();
+    this.release(room); // les joueurs peuvent relancer une partie tout de suite
     const g = room.rg?.game;
     // Révélation de la graine : chacun peut vérifier le mélange (SHA-256(graine serveur) = engagement)
     const reveal = { serverSeed: room.serverSeed, clientSeeds: room.seats.map(s => s?.seed ?? null), commit: room.commit };
-    for (const pid of [0, 1]) this.toSeat(room, pid, { type: 'over', ...over, ...reveal });
+    for (const pid of [0, 1]) {
+      const msg = { type: 'over', you: pid, names: room.seats.map(s => s?.name ?? null), ...over, ...reveal };
+      const s = room.seats[pid];
+      if (s?.conn) this.send(s.conn, msg);
+      else if (s) this.lastOver.set(s.userId, { msg, at: this.now() });
+    }
     if (g) try { this.onFinished({ id: room.id, mode: room.mode, names: room.seats.map(s => s.name), config: g.config, answers: g.s.answers, ...over }); } catch { /* journalisation seulement */ }
   }
 
   toSeat(room, pid, msg) { const s = room.seats[pid]; if (s?.conn) this.send(s.conn, msg); }
 
-  resume(st, msg) {
-    const ref = isStr(msg.token, 64) ? this.seats.get(hash(msg.token)) : null;
-    if (!ref) return this.error(st, 'token-invalid');
-    if (st.seat && (st.seat.room !== ref.room || st.seat.pid !== ref.pid)) return this.error(st, 'already-seated');
-    const { room, pid } = ref, seat = room.seats[pid];
+  /** Reprise automatique du siège du compte (nouvel appareil, rechargement, coupure). */
+  resume(st) {
+    const { room, pid } = this.byUser.get(st.user.id), seat = room.seats[pid];
     // La connexion la plus récente gagne
     if (seat.conn && seat.conn !== st.conn) { this.send(seat.conn, { type: 'replaced' }); seat.conn.close(4000, 'ouvert ailleurs'); }
     seat.conn = st.conn;
     seat.leftAt = null;
     st.seat = { room, pid };
-    if (room.status === 'waiting') return this.send(st.conn, { type: 'waiting', mode: room.mode, commit: room.commit, expiresAt: room.inviteExpires });
+    if (room.status === 'waiting') return this.send(st.conn, { type: 'waiting', invite: room.invite, mode: room.mode, commit: room.commit, expiresAt: room.inviteExpires });
     const [a, b] = room.seats;
     this.send(st.conn, { type: 'start', you: pid, names: [a.name, b.name], mode: room.mode, commit: room.commit, resumed: true });
-    if (room.status === 'over') {
-      this.send(st.conn, { type: 'state', view: room.rg.view(pid) });
-      return this.send(st.conn, { type: 'over', ...room.over, serverSeed: room.serverSeed, clientSeeds: room.seats.map(s => s.seed), commit: room.commit });
-    }
     room.rg.reconnect(pid);
     this.toSeat(room, 1 - pid, { type: 'opponent', connected: true });
+  }
+
+  cancel(st) {
+    const s = st.seat;
+    if (!s || s.room.status !== 'waiting') return this.error(st, 'nothing-to-cancel');
+    this.drop(s.room);
+    st.seat = null;
+    this.send(st.conn, { type: 'cancelled' });
   }
 
   answer(st, msg) {
@@ -218,12 +234,20 @@ export class Lobby {
         if (gone >= 0) this.finish(room, { forfeit: gone, winner: 1 - gone });
       } else if (room.status === 'over' && t - room.finishedAt >= this.o.finishedTtl) this.drop(room);
     }
+    for (const [u, list] of this.created) if (list.every(x => x <= t - 60 * MIN)) this.created.delete(u);
+    for (const [u, x] of this.lastOver) if (t - x.at >= this.o.finishedTtl) this.lastOver.delete(u);
+  }
+
+  /** Les comptes de ce salon n'y sont plus rattachés. */
+  release(room) {
+    for (const s of room.seats) if (s && this.byUser.get(s.userId)?.room === room) this.byUser.delete(s.userId);
   }
 
   drop(room) {
     this.rooms.delete(room.id);
     if (room.inviteHash) this.invites.delete(room.inviteHash);
-    for (const s of room.seats) if (s) { this.seats.delete(s.tokenHash); s.conn = null; }
+    this.release(room);
+    for (const s of room.seats) if (s) s.conn = null;
     room.rg = null; // la partie (et sa question en attente) part avec le salon
   }
 

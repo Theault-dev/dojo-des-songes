@@ -35,13 +35,22 @@
 </style>
 </head>
 <body>
-<header><h1>Dojo des Songes — PvP (client de test)</h1><span id="status">Connexion…</span></header>
+<header><h1>Dojo des Songes — PvP (client de test)</h1><span id="status">Connexion…</span><span id="who"></span><button id="logout" hidden>Se déconnecter</button></header>
 <main>
-  <section id="setup">
+  <section id="login" hidden>
+    <h2>Connexion</h2>
+    <p><a id="discord" href="/auth/discord"><button>Se connecter avec Discord</button></a></p>
+    <form id="dev-login" hidden action="/auth/dev" method="get">
+      <label for="dev-name">Connexion factice (développement) : pseudo</label>
+      <input id="dev-name" name="name" maxlength="24" required>
+      <p><button>Se connecter</button></p>
+      <p style="color:var(--muted)">Pour jouer contre vous-même, ouvrez le second joueur dans une fenêtre de navigation privée (les cookies sont partagés entre onglets).</p>
+    </form>
+  </section>
+  <section id="setup" hidden>
     <h2>Nouvelle partie</h2>
     <div class="row">
       <div>
-        <label for="name">Pseudo</label><input id="name" maxlength="24">
         <label for="mode">Mode</label>
         <select id="mode"><option value="casu">Casu</option><option value="open">Casu, deck ouvert</option></select>
         <label for="preset">Deck d'exemple</label><select id="preset"></select>
@@ -49,7 +58,7 @@
       <div><label for="deck">Decklist</label><textarea id="deck"></textarea></div>
     </div>
     <p><button id="create">Créer un salon</button><button id="join" hidden>Rejoindre la partie</button></p>
-    <p id="invite-box" hidden>Lien à envoyer à l'adversaire (usage unique, 15 min) :<br><code id="invite"></code> <button id="copy">Copier</button></p>
+    <p id="invite-box" hidden>Lien à envoyer à l'adversaire (usage unique, 15 min) :<br><code id="invite"></code> <button id="copy">Copier</button> <button id="cancel">Annuler le salon</button></p>
     <p id="setup-msg"></p>
   </section>
 
@@ -69,11 +78,9 @@
 'use strict';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const KEY = 'dojo-pvp-seat';   // par onglet : deux onglets = deux joueurs
 const invite = new URLSearchParams(location.search).get('invite');
 let ws, view = null, ask = null, selected = new Set(), started = false;
 
-$('#name').value = sessionStorage.getItem('dojo-pvp-name') || (invite ? 'Joueur 2' : 'Joueur 1');
 if (invite) { $('#create').hidden = true; $('#join').hidden = false; $('#mode').disabled = true; }
 
 fetch('/dev/decks').then(r => r.json()).then(decks => {
@@ -84,38 +91,40 @@ fetch('/dev/decks').then(r => r.json()).then(decks => {
 
 const randomSeed = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
 const send = m => ws?.readyState === 1 && ws.send(JSON.stringify(m));
-const player = () => { sessionStorage.setItem('dojo-pvp-name', $('#name').value); return { name: $('#name').value, deckText: $('#deck').value, seed: randomSeed() }; };
+const player = () => ({ deckText: $('#deck').value, seed: randomSeed() });
 $('#create').onclick = () => send({ type: 'create', mode: $('#mode').value, ...player() });
 $('#join').onclick = () => send({ type: 'join', invite, ...player() });
 $('#copy').onclick = () => navigator.clipboard.writeText($('#invite').textContent);
+$('#cancel').onclick = () => send({ type: 'cancel' });
+$('#logout').onclick = () => fetch('/auth/logout', { method: 'POST' }).then(() => location.reload());
+
+const showInvite = (inv, expiresAt) => {
+  $('#invite').textContent = `${location.origin}/?invite=${inv}`;
+  $('#invite-box').hidden = false;
+  $('#create').disabled = true;
+  $('#setup-msg').textContent = `En attente de l'adversaire (jusqu'à ${new Date(expiresAt).toLocaleTimeString()})…`;
+};
 
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-  ws.onopen = () => {
-    $('#status').textContent = 'Connecté';
-    const t = sessionStorage.getItem(KEY);
-    if (t) send({ type: 'resume', token: t });
-  };
+  ws.onopen = () => { $('#status').textContent = 'Connecté'; };
   ws.onclose = e => { $('#status').textContent = `Déconnecté (${e.code}) — nouvelle tentative…`; if (e.code !== 4000) setTimeout(connect, 1500); };
   ws.onmessage = e => handle(JSON.parse(e.data));
 }
 
 const ERRORS = {
   'invite-invalid': 'Invitation inconnue, déjà utilisée ou expirée.', 'invite-expired': 'Personne n\'a rejoint à temps : le salon est fermé.',
-  'deck-invalid': 'Deck refusé.', 'bad-name': 'Pseudo invalide.', 'server-full': 'Serveur complet, réessayez plus tard.',
-  'token-invalid': 'Partie introuvable (terminée ou expirée).', 'already-seated': 'Vous êtes déjà dans une partie.',
+  'deck-invalid': 'Deck refusé.', 'server-full': 'Serveur complet, réessayez plus tard.',
+  'already-in-game': 'Vous avez déjà un salon ou une partie en cours.', 'own-invite': 'C\'est votre propre invitation : envoyez-la à votre adversaire.',
+  'too-many-rooms': 'Trop de salons créés cette heure-ci.',
 };
 
 function handle(m) {
   switch (m.type) {
-    case 'created':
-      sessionStorage.setItem(KEY, m.token);
-      $('#invite').textContent = `${location.origin}/?invite=${m.invite}`;
-      $('#invite-box').hidden = false;
-      $('#setup-msg').textContent = 'En attente de l\'adversaire…';
-      break;
-    case 'joined': sessionStorage.setItem(KEY, m.token); break;
-    case 'waiting': $('#setup-msg').textContent = 'Salon créé, en attente de l\'adversaire (le lien affiché à la création reste valable).'; break;
+    case 'hello': $('#who').textContent = `· ${m.user.name}`; break;
+    case 'created': case 'waiting': showInvite(m.invite, m.expiresAt); break;
+    case 'cancelled': $('#invite-box').hidden = true; $('#create').disabled = false; $('#setup-msg').textContent = 'Salon annulé.'; break;
+    case 'joined': break;
     case 'start':
       started = true;
       $('#setup').hidden = true; $('#game').hidden = false;
@@ -129,7 +138,6 @@ function handle(m) {
     case 'replaced': $('#status').textContent = 'Partie ouverte sur un autre appareil ou onglet.'; break;
     case 'over': ask = null; renderAsk(); renderOver(m); break;
     case 'error':
-      if (m.error === 'token-invalid') sessionStorage.removeItem(KEY);
       if (m.seq != null) { if (answered?.seq === m.seq) { ask = answered; renderAsk(); } $('#ask-msg').textContent = `Réponse refusée : ${m.error}`; break; }
       $('#setup-msg').innerHTML = `<span class="err">${esc(ERRORS[m.error] ?? m.error)}${m.detail ? ' ' + esc(m.detail) : ''}</span>`;
       break;
@@ -201,11 +209,21 @@ async function renderOver(m) {
   $('#over').hidden = false;
   $('#over').innerHTML = `<h2>Fin de partie</h2><p>${text}</p>
     <p class="${fair ? 'ok' : 'err'}">${fair ? '✔ Mélange vérifié' : '✘ La graine révélée ne correspond pas à l\'engagement'} : SHA-256(graine serveur) = engagement publié avant la partie.</p>
-    <p><button onclick="sessionStorage.removeItem('${KEY}'); location.href='/'">Nouvelle partie</button></p>`;
-  sessionStorage.removeItem(KEY);
+    <p><button onclick="location.href='/'">Nouvelle partie</button></p>`;
 }
 
-connect();
+// Connexion : le WebSocket n'est ouvert qu'une fois connecté (cookie de session)
+fetch('/auth/me').then(r => r.json()).then(me => {
+  if (me.user) { $('#setup').hidden = false; $('#logout').hidden = false; $('#who').textContent = `· ${me.user.name}`; return connect(); }
+  $('#status').textContent = 'Non connecté';
+  $('#login').hidden = false;
+  $('#discord').hidden = !me.discord;
+  $('#dev-login').hidden = !me.devLogin;
+  // Après connexion, on revient sur l'invitation
+  if (invite) { $('#dev-login').action = '/auth/dev'; sessionStorage.setItem('dojo-pvp-invite', invite); }
+});
+const savedInvite = sessionStorage.getItem('dojo-pvp-invite');
+if (!invite && savedInvite) { sessionStorage.removeItem('dojo-pvp-invite'); location.replace(`/?invite=${savedInvite}`); }
 </script>
 </body>
 </html>
