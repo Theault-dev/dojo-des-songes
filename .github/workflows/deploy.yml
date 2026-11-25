@@ -18,6 +18,8 @@ jobs:
                   node-version: "20"
 
             - name: Build
+              env:
+                  OPERATOR_NAME: ${{ vars.OPERATOR_NAME }}
               run: node build.mjs
 
             - name: Setup SSH
@@ -31,7 +33,11 @@ jobs:
                   printf '%s\n' "$KNOWN_HOST" > ~/.ssh/known_hosts
 
             - name: Deploy to Raspberry Pi
-              run: ssh -p 2222 -o StrictHostKeyChecking=yes dojo-deploy@harruis.fr < dist/index.html
+              # Tout le dossier dist/ (page du jeu + pages légales), en archive : voir deploy/dojo-deploy
+              run: tar -czf - -C dist . | ssh -p 2222 -o StrictHostKeyChecking=yes dojo-deploy@harruis.fr
 
             - name: Check site
-              run: curl -fsSI https://dreamland.harruis.fr/
+              run: |
+                  curl -fsSI https://dreamland.harruis.fr/
+                  curl -fsSIL https://dreamland.harruis.fr/conditions
+                  curl -fsSIL https://dreamland.harruis.fr/confidentialite
