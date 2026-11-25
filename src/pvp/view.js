@@ -68,12 +68,19 @@ function cardView(g, viewer, handles, card, visible, { noHandle = false } = {}) 
   const v = {
     h, id: card.id, owner: card.owner, zone: card.zone, label: g.label(card), type: d.type,
     faceDown: !!card.faceDown, kw: safe(() => g.keywords(card)) ?? [],
-    markers: card.markers.reduce((a, m) => a + (m.v || 0), 0),
+    markers: card.markers.filter(m => m.v).map(m => ({ v: m.v, src: m.src ?? null })),
   };
+  // États visibles sur la carte (badges de l'interface)
+  const tmp = {};
+  for (const k of ['inciblable', 'protected', 'lockFaceDown']) if (card.tmp?.[k]) tmp[k] = true;
+  if (Object.keys(tmp).length) v.tmp = tmp;
+  for (const k of ['countered', 'silenced', 'shielded']) if (card[k]) v[k] = true;
+  if (card.cap != null) v.cap = card.cap;
   if (d.type === 'P') v.aura = safe(() => g.aura(card));
   if (d.type === 'K') {
     v.rang = card.zone === 'kicks' ? card.rang ?? null : d.rang;
     v.force = card.zone === 'kicks' && g.s.combat ? safe(() => g.kickForce(card)) : d.force;
+    if (card.zone === 'kicks') v.condMet = !!safe(() => g.kickCondMet(card));
   }
   if (card.slot != null) v.slot = card.slot;
   return v;
@@ -96,7 +103,7 @@ export function viewFor(g, viewer, handles, { openDecks = false } = {}) {
     const showLieu = mine || p.lieuRevealed || openDecks;
     const v = {
       pid: p.pid, name: p.name, renommee: p.renommee, gold: p.gold, control: safe(() => g.control(p.pid)),
-      lieu: showLieu ? { id: p.lieuId, name: LIEUX[p.lieuId]?.name ?? null, used: [...p.lieuUsed] } : null,
+      lieu: showLieu ? { id: p.lieuId, name: LIEUX[p.lieuId]?.name ?? null, used: [...p.lieuUsed], usedNight: !!p.lieuUsedNight } : null,
       teams: [...p.teams],
       counts: { groupe: p.groupe.length, songe: p.songe.length, hand: p.hand.length },
       hand: mine ? p.hand.map(c => card(c, covered)) : null,
@@ -113,7 +120,7 @@ export function viewFor(g, viewer, handles, { openDecks = false } = {}) {
   let combat = null;
   if (s.combat) {
     const c = s.combat;
-    combat = { attacker: c.attacker, provoc: !!c.provoc, stage: c.stage ?? null, sides: {} };
+    combat = { attacker: c.attacker, provoc: !!c.provoc, stage: c.stage ?? null, sides: {}, final: c.final ? { ...c.final } : null, winners: c.winners ? [...c.winners] : null };
     for (const [pid, sd] of Object.entries(c.sides)) {
       const f = g.find(sd.fighter);
       combat.sides[pid] = {
@@ -129,7 +136,7 @@ export function viewFor(g, viewer, handles, { openDecks = false } = {}) {
 
   const log = s.log.map(l => ({ night: l.night, pid: l.pid, text: l.to == null || l.to === viewer ? l.text : l.masked }));
   return {
-    you: viewer, night: s.night, first: s.first, phase: s.phase, over: s.over, result: s.result,
+    you: viewer, night: s.night, first: s.first, phase: s.phase, active: s.active ?? null, over: s.over, result: s.result,
     history: s.history.map(x => [...x]), players, combat, log,
   };
 }
@@ -181,7 +188,11 @@ export function requestFor(g, viewer, handles, req, seq) {
     const v = { id: `o${i}`, label: String(o.label ?? '') };
     if (o.card) v.card = requestCard(g, viewer, handles, o.card);
     if (o.blocked) v.blocked = typeof o.blocked === 'string' ? o.blocked : true;
-    if (o.action) v.action = true;
+    if (o.action || String(o.id).startsWith('act:')) v.action = true;
+    // Ce que l'interface déduisait des identifiants du moteur, devenus opaques
+    if (o.card && (o.id === o.card.uid || o.id === `kick:${o.card.uid}`)) v.pick = true;
+    if (['pass', 'end', 'no', 'none'].includes(o.id)) v.pass = true;
+    if (o.ev?.label) v.ev = { label: String(o.ev.label) };
     if (o.lieuIndex != null) v.lieuIndex = o.lieuIndex;
     return v;
   });

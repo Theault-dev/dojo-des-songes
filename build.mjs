@@ -2,7 +2,7 @@
 // Chaque module devient une IIFE qui renvoie ses exports ; les imports deviennent des déstructurations.
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 
-const ORDER = ['official', 'data', 'effects', 'engine', 'bot', 'expert', 'fx', 'deckio', 'store', 'art', 'ui'];
+const ORDER = ['official', 'data', 'effects', 'engine', 'bot', 'expert', 'fx', 'deckio', 'store', 'art', 'netplay', 'ui'];
 const modVar = name => `MOD_${name}`;
 
 function wrap(name) {

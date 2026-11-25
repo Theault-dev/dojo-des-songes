@@ -6,6 +6,7 @@
 //   { type: 'create', deck | deckText, seed?, mode? }   → 'created'
 //   { type: 'join', invite, deck | deckText, seed? }    → 'joined' puis 'start'
 //   { type: 'cancel' }                                  → ferme son salon en attente
+//   { type: 'concede' }                                 → abandonne la partie en cours
 //   { type: 'answer', seq, answer }                     → réponse à 'ask'
 // Le serveur envoie : hello, created, waiting, cancelled, start, state,
 // ask, clock, event, opponent, over, replaced, error. Voir docs/PVP.md.
@@ -108,6 +109,7 @@ export class Lobby {
       case 'create': return this.create(st, msg);
       case 'join': return this.join(st, msg);
       case 'cancel': return this.cancel(st);
+      case 'concede': return this.concede(st);
       case 'answer': return this.answer(st, msg);
       default: return this.error(st, 'bad-message');
     }
@@ -257,6 +259,12 @@ export class Lobby {
     room.rg.reconnect(pid);
     this.sendClock(room, pid);
     this.toSeat(room, 1 - pid, { type: 'opponent', connected: true });
+  }
+
+  concede(st) {
+    const s = st.seat;
+    if (!s || s.room.status !== 'playing') return this.error(st, 'not-playing');
+    this.finish(s.room, { forfeit: s.pid, winner: 1 - s.pid, reason: 'abandon' });
   }
 
   cancel(st) {

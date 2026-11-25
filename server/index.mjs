@@ -116,7 +116,12 @@ export async function startServer({
       if (await pages.handle(req, res, path, url.searchParams, ipOf(req, req.socket))) return;
       if (req.method !== 'GET') return out(405, 'text/plain', 'Method Not Allowed');
       if (path === '/health') return out(200, 'application/json', JSON.stringify({ ok: true, rooms: lobby.stats() }));
-      if (dev && path === '/') return out(200, 'text/html; charset=utf-8', devPage);
+      // DEV : le vrai site (dist/index.html, à rebâtir avec `node build.mjs`) ; le client de test sur /dev
+      if (dev && path === '/') {
+        const site = fileURLToPath(new URL('../dist/index.html', import.meta.url));
+        return existsSync(site) ? out(200, 'text/html; charset=utf-8', readFileSync(site)) : out(200, 'text/html; charset=utf-8', devPage);
+      }
+      if (dev && path === '/dev') return out(200, 'text/html; charset=utf-8', devPage);
       if (dev && path === '/dev/decks') return out(200, 'application/json', JSON.stringify(devDecks));
       out(404, 'text/plain', 'Not Found');
     } catch (e) {

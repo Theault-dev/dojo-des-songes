@@ -10,6 +10,7 @@ import { parseDecks, formatDecks, newDeckId } from './deckio.js';
 import { DeckStore } from './store.js';
 import { ArtStore } from './art.js';
 import { starfield, Particles, Sound } from './fx.js';
+import { RemoteView, NetClient } from './netplay.js';
 
 const HUMAN = 0, BOT = 1;
 const $ = sel => document.querySelector(sel);
@@ -89,8 +90,17 @@ const KW_HELP = {
 };
 const RANK_ORDER = { S: 0, M: 1, B: 2, '★': 3 };
 /** Vrai si l'option consiste à choisir la carte elle-même (et non une décision à propos de la carte). */
-const isCardPick = o => o.card && (o.id === o.card.uid || o.id === `kick:${o.card.uid}`);
+const isCardPick = o => !!o.card && (o.pick ?? (o.id === o.card.uid || o.id === `kick:${o.card.uid}`));
+/** Option « passer » (en ligne, le serveur la signale : ses identifiants sont opaques). */
+const isPassOpt = o => o.pass ?? ['pass', 'end', 'no', 'none'].includes(o.id);
+const PVP_ERRORS = {
+  'invite-invalid': 'Cette invitation est inconnue, déjà utilisée ou expirée.', 'invite-expired': 'Personne n\'a rejoint votre salon à temps : il est fermé.',
+  'deck-invalid': 'Ce deck n\'est pas valide.', 'server-full': 'Le serveur est complet. Réessayez dans quelques minutes.',
+  'already-in-game': 'Vous avez déjà un salon ou une partie en cours.', 'own-invite': 'C\'est votre propre invitation : envoyez ce lien à votre adversaire.',
+  'too-many-rooms': 'Trop de salons créés cette heure-ci. Réessayez plus tard.', 'nothing-to-cancel': 'Aucun salon à annuler.',
+};
 const TYPE_LABEL = { P: 'Persos', K: 'Kicks', S: 'Soutiens', L: 'Lieux' };
+const fmtClock = ms => { const t = Math.max(0, Math.ceil(ms / 1000)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
 const RULES = `
   <h3>Une nuit</h3>
   <ol><li><b>Crépuscule</b> de chaque joueur : on relève ses cartes, on recrute 1 Perso, on pioche jusqu'à 7, puis on peut faire entrer des Persos (somme des Auras ≤ numéro de la nuit) et poser jusqu'à 2 Soutiens sur ses 2 zones (un Soutien posé sur un autre le recouvre : seul celui du dessus est actif).</li>
@@ -146,8 +156,24 @@ class UI {
       if (def) this.previewDef(def.dataset.def);
     });
     addEventListener('resize', () => this.game && this.scheduleRender());
+    // Jeu entre joueurs : seulement sur le site (le serveur répond à /auth/me)
+    const invite = new URLSearchParams(location.search).get('invite') ?? sessionStorage.getItem('dojo-pvp-invite');
+    sessionStorage.removeItem('dojo-pvp-invite');
+    if (new URLSearchParams(location.search).has('invite')) history.replaceState(null, '', location.pathname);
+    this.pvp = { available: false, user: null, invite, room: null, msg: null, clock: null, opp: true };
+    NetClient.probe().then(r => {
+      Object.assign(this.pvp, r);
+      if (r.user) this.netConnect();
+      if (this.screen === 'setup') this.renderSetup();
+    });
+    setInterval(() => this.tickClock(), 500);
     this.renderSetup();
   }
+
+  /** Vrai pendant une partie contre un autre joueur. */
+  get online() { return this.game instanceof RemoteView; }
+  /** Nom de l'adversaire. */
+  get oppName() { return this.online ? this.game.pname(BOT) : 'Bot'; }
 
   savePrefs() { try { localStorage.setItem('dojo-prefs', JSON.stringify(this.prefs)); } catch { /* stockage indisponible */ } }
 
@@ -216,7 +242,9 @@ class UI {
             <button class="btn primary big" data-act="start" ${valid.length ? '' : 'disabled'}>Lancer la partie</button>
           </div>
         </div>
+        ${this.pvpHTML(valid)}
       </section>`;
+    for (const id of ['pvpDeck', 'pvpMode']) $(`#${id}`)?.addEventListener('change', e => { this.prefs[id] = e.target.value; this.savePrefs(); });
     for (const id of ['speed', 'first', 'me', 'bot']) $(`#${id}`)?.addEventListener('change', e => { this.prefs[id] = e.target.value; this.savePrefs(); });
     $('#level')?.addEventListener('change', e => { this.prefs.level = e.target.value; this.savePrefs(); this.renderSetup(); });
     $('#knowList')?.addEventListener('change', e => { this.prefs.knowList = e.target.checked; this.savePrefs(); });
@@ -575,11 +603,19 @@ class UI {
         case 'bd-back': if (this.dirty) this.openModal('leaveBuilder'); else { this.closeModal(); this.renderSetup(); } return;
         case 'bd-leave': this.dirty = false; this.closeModal(); this.renderSetup(); return;
         case 'bd-save-leave': this.bdSave().then(() => { this.closeModal(); this.renderSetup(); }); return;
-        case 'start': case 'rematch': this.start(); return;
-        case 'menu': this.openModal('quit'); return;
+        case 'start': this.start(); return;
+        case 'rematch': if (this.online) { this.leaveOnline(); return; } this.start(); return;
+        case 'menu': if (this.online && this.game.s.over) { this.leaveOnline(); return; } this.openModal(this.online ? 'forfeit' : 'quit'); return;
+        case 'pvp-create': this.pvpCreate(); return;
+        case 'pvp-join': this.pvpJoin(); return;
+        case 'pvp-cancel': this.net?.send({ type: 'cancel' }); return;
+        case 'pvp-copy': navigator.clipboard?.writeText(this.inviteUrl()).then(() => { this.pvp.msg = { ok: 'Lien copié.' }; this.renderSetup(); }).catch(() => {}); return;
+        case 'pvp-forget-invite': this.pvp.invite = null; this.renderSetup(); return;
+        case 'pvp-dev-login': { const n = $('#pvp-dev-name')?.value.trim(); if (n) { this.saveInviteForLogin(); location.href = `/auth/dev?name=${encodeURIComponent(n)}`; } return; }
+        case 'pvp-login': this.saveInviteForLogin(); location.href = '/auth/discord'; return;
         case 'forfeit': this.openModal('forfeit'); return;
         case 'forfeit-now': this.forfeit(); return;
-        case 'menu-now': this.game = null; this.pending = null; document.querySelector('.end')?.remove(); this.closeModal(); this.renderSetup(); return;
+        case 'menu-now': if (this.online) { this.leaveOnline(); return; } this.game = null; this.pending = null; document.querySelector('.end')?.remove(); this.closeModal(); this.renderSetup(); return;
         case 'opt': this.chooseOption(t.dataset.id); return;
         case 'confirm': this.answer([...this.pending.selected]); return;
         case 'clear': this.pending.selected.clear(); this.render(); return;
@@ -629,7 +665,7 @@ class UI {
   }
 
   giveAdvice() {
-    if (!this.pending) return;
+    if (!this.pending || this.online) return; // pas d'aide du bot contre un joueur
     const ans = this.advisor.suggest(this.game, HUMAN, this.pending.req);
     this.advice = new Set([].concat(ans ?? []).map(String));
     this.render();
@@ -647,6 +683,7 @@ class UI {
   forfeit() {
     const g = this.game;
     if (!g || g.s.over) return;
+    if (this.online) { this.closeModal(); this.net?.send({ type: 'concede' }); return; }
     this.closeModal();
     this.pending = null;
     g.s.combat = null;
@@ -751,7 +788,7 @@ class UI {
           <div class="inspector" id="inspector"></div>
           <div class="log-wrap">
             <div class="log-head"><button class="log-toggle" data-act="toggle-log">Journal</button>
-              <div class="tabs">${[['all', 'Tout'], ['fight', 'Combats'], ['me', 'Vous']].map(([f, l]) => `<button data-act="logf" data-f="${f}" class="tab">${l}</button>`).join('')}<button data-act="report" class="tab" title="Rapport de diagnostic : partie rejouable + décisions du bot">Rapport</button></div></div>
+              <div class="tabs">${[['all', 'Tout'], ['fight', 'Combats'], ['me', 'Vous']].map(([f, l]) => `<button data-act="logf" data-f="${f}" class="tab">${l}</button>`).join('')}${this.online ? '' : '<button data-act="report" class="tab" title="Rapport de diagnostic : partie rejouable + décisions du bot">Rapport</button>'}</div></div>
             <ol class="log" id="log"></ol>
           </div>
         </aside>
@@ -830,14 +867,15 @@ class UI {
       const n = i + 1, lit = n / NIGHTS;
       return `<li class="moon ${phase(n)}" title="Nuit ${n}"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" class="m-dark"/><path class="m-lit" d="M12 2a10 10 0 0 1 0 20a${Math.abs(10 * (1 - 2 * lit)).toFixed(2)} 10 0 0 ${lit > 0.5 ? 1 : 0} 0-20z"/></svg><span>${n}</span></li>`;
     }).join('');
-    const score = pid => `<div class="score ${pid === HUMAN ? 'me' : 'bot'}"><span class="who">${pid === HUMAN ? 'Vous' : 'Bot'}</span><span class="pts">${g.p(pid).renommee}</span><span class="unit">Renommée</span></div>`;
+    const score = pid => `<div class="score ${pid === HUMAN ? 'me' : 'bot'}"><span class="who">${pid === HUMAN ? 'Vous' : esc(this.oppName)}</span><span class="pts">${g.p(pid).renommee}</span><span class="unit">Renommée</span></div>`;
     return `
-      <div class="brand"><button class="btn ghost small" data-act="menu" title="Quitter la partie">Decks</button><span>Dojo des Songes</span></div>
+      <div class="brand"><button class="btn ghost small" data-act="menu" title="${this.online ? 'Revenir à l\'accueil' : 'Quitter la partie'}">Decks</button><span>Dojo des Songes</span></div>
       <ol class="nights" aria-label="Nuits">${moons}</ol>
       <div class="phase"><span class="phase-name">${esc(s.phase)}</span>${s.night ? `<span class="first">1ᵉʳ joueur : ${esc(g.pname(s.first))}</span>` : ''}</div>
       <div class="tools">
+        ${this.online ? `<span class="pvp-clock" id="pvp-clock">${this.clockHTML()}</span>${this.pvp.opp ? '' : '<span class="pvp-off" title="Votre adversaire a perdu la connexion">Adversaire déconnecté</span>'}` : `
         <button class="icon-btn" data-act="pause" title="${this.paused ? 'Reprendre le bot' : 'Mettre le bot en pause'}">${this.paused ? '▶' : '❚❚'}</button>
-        <select id="speed-live" title="Vitesse du bot">${Object.keys(SPEEDS).map(s2 => `<option value="${s2}" ${s2 === this.prefs.speed ? 'selected' : ''}>${s2}</option>`).join('')}</select>
+        <select id="speed-live" title="Vitesse du bot">${Object.keys(SPEEDS).map(s2 => `<option value="${s2}" ${s2 === this.prefs.speed ? 'selected' : ''}>${s2}</option>`).join('')}</select>`}
         <button class="icon-btn" data-act="mute" title="${this.sound.on ? 'Couper le son' : 'Activer le son'}">${this.sound.on ? '♪' : '✕'}</button>
         <button class="icon-btn" data-act="rules" title="Règles et raccourcis">?</button>
         ${!s.over ? '<button class="btn ghost small forfeit" data-act="forfeit" title="Abandonner la partie">Abandonner</button>' : ''}
@@ -862,10 +900,10 @@ class UI {
         <ol>${lieu.abilities.map((a, i) => `<li class="${p.lieuUsed[i] ? 'used' : ''} ${pid === HUMAN && readyLieu.has(i) ? 'ready' : ''}"><span class="when">${whenLabel[a.when]}</span>${esc(a.text)}</li>`).join('')}</ol>
       </div>`;
     const botHand = pid === BOT ? `<div class="zone opp-hand"><h3>Main <small>${p.hand.length}</small></h3><div class="row">${
-      this.prefs.reveal ? p.hand.map(c => this.cardHTML(c, { small: true })).join('') : p.hand.map(() => '<div class="card back small" aria-hidden="true"></div>').join('')}</div></div>` : '';
+      this.prefs.reveal && !this.online ? p.hand.map(c => this.cardHTML(c, { small: true })).join('') : p.hand.map(() => '<div class="card back small" aria-hidden="true"></div>').join('')}</div></div>` : '';
     return `
       <div class="side-head">
-        <h2>${pid === HUMAN ? 'Votre camp' : 'Camp du bot'} <small>${esc(p.deck.name)}</small></h2>
+        <h2>${pid === HUMAN ? 'Votre camp' : this.online ? `Camp de ${esc(this.oppName)}` : 'Camp du bot'} <small>${esc(p.deck.name)}</small></h2>
         <div class="counts">${counts}${tags}<span class="count ctrl ${ctrl > octrl ? 'lead' : ''}" title="Contrôle : somme des Auras visibles dans l'Arène"><b>${ctrl}</b>Contrôle${ctrl > octrl ? ' · mène' : ''}</span></div>
       </div>
       <div class="side-body">
@@ -887,7 +925,7 @@ class UI {
     const mine = pw(HUMAN), theirs = pw(BOT), total = Math.max(1, mine + theirs);
     const sideRow = pid => {
       const sd = c.sides[pid], f = g.find(sd.fighter);
-      const combo = f && g.def(f).combo;
+      const combo = f && !f.hidden && g.def(f).combo;
       const ranks = sd.kicks.map(k => k.rang).filter(Boolean);
       let comboChips = '<span class="combo none">Pas de Combo</span>';
       if (combo) {
@@ -946,18 +984,18 @@ class UI {
     const tags = [...p.teams].map(t => `<span class="team" title="${esc(KW_HELP[t] ?? '')}">${esc(t.toLowerCase())}</span>`).join('') + (p.gold ? `<span class="team">${p.gold} or</span>` : '');
     const head = `
       <div class="mat-head">
-        <h2>${pid === HUMAN ? 'Votre tapis' : 'Tapis du bot'} <small>${esc(p.deck.name)}</small></h2>
+        <h2>${pid === HUMAN ? 'Votre tapis' : this.online ? `Tapis de ${esc(this.oppName)}` : 'Tapis du bot'} <small>${esc(p.deck.name)}</small></h2>
         <div class="counts">${tags}<span class="count ctrl ${ctrl > octrl ? 'lead' : ''}"><b>${ctrl}</b>Contrôle${ctrl > octrl ? ' · mène' : ''}</span>
         ${pid === BOT ? `<span class="count"><b>${p.hand.length}</b>Main</span>` : ''}</div>
       </div>`;
-    const botHand = pid === BOT ? `<div class="mat-hand">${this.prefs.reveal ? p.hand.map(x => this.cardHTML(x, { small: true })).join('') : p.hand.map(() => '<div class="card back small" aria-hidden="true"></div>').join('')}</div>` : '';
+    const botHand = pid === BOT ? `<div class="mat-hand">${this.prefs.reveal && !this.online ? p.hand.map(x => this.cardHTML(x, { small: true })).join('') : p.hand.map(() => '<div class="card back small" aria-hidden="true"></div>').join('')}</div>` : '';
     const zones = [
       this.zone('night', flip, `<span class="night-die">${g.s.night || '–'}</span>`),
       this.zone('lieu', flip, `<div class="mat-lieu fam-${deckFamily(p.deck)} ${p.lieuUsedNight ? 'spent' : ''}"><b>${esc(lieu.name)}</b>${lieu.abilities.map((a, i) =>
         `<span class="${p.lieuUsed[i] ? 'used' : ''} ${pid === HUMAN && readyLieu.has(i) ? 'ready' : ''}" title="${esc(a.text)}"><i>${whenLabel[a.when]}</i>${esc(a.text)}</span>`).join('')}</div>`),
       this.zone('fighter', flip, fighter ? this.cardHTML(fighter) : '', fighter ? 'filled' : ''),
       this.zone('kicks', flip, `<div class="kicks" data-fx="fighter-${pid}">${(c?.sides[pid]?.kicks ?? []).map(k => this.cardHTML(k, { kick: true })).join('')}</div>`),
-      this.zone('arena', flip, `<div class="row">${p.arena.filter(x => x !== fighter).map(x => this.cardHTML(x)).join('')}</div>`),
+      this.zone('arena', flip, `<div class="row">${p.arena.filter(x => x.uid !== fighter?.uid).map(x => this.cardHTML(x)).join('')}</div>`),
       this.zone('supL', flip, sups[0] ? this.stackHTML(sups[0]) : ''),
       this.zone('supR', flip, `<div class="stack">${sups.slice(1).map(s => this.stackHTML(s)).join('')}</div>`),
       this.zone('groupe', flip, deck(p.groupe.length, 'Groupe')),
@@ -975,12 +1013,12 @@ class UI {
     const pw = pid => (c.final ? c.final[pid] : g.power(pid));
     const mine = pw(HUMAN), theirs = pw(BOT), total = Math.max(1, mine + theirs);
     const side = pid => {
-      const sd = c.sides[pid], f = g.find(sd.fighter), combo = f && g.def(f).combo;
+      const sd = c.sides[pid], f = g.find(sd.fighter), combo = f && !f.hidden && g.def(f).combo;
       const lit = combo ? rankCoverage(combo.ranks, sd.kicks.map(k => k.rang).filter(Boolean)) : [];
       const pips = Array.from({ length: Math.max(sd.max, sd.turns) }, (_, i) => `<i class="${i < sd.turns ? 'used' : ''}"></i>`).join('');
       const comboChip = combo ? `<span class="combo ${sd.comboActive ? 'on' : sd.comboBlocked ? 'blocked' : ''}">Combo ${combo.ranks.map((r, i) => `<i class="${lit[i] ? 'lit' : ''}">${r}</i>`).join('')} +${sd.comboActive ? g.comboBonus(pid) : combo.bonus}</span>` : '<span class="combo none">Pas de Combo</span>';
       return `<div class="strip-side ${pid === HUMAN ? 'me' : 'bot'} ${c.winners?.includes(pid) ? 'winner' : ''}">
-        <span class="who">${pid === HUMAN ? 'Vous' : 'Bot'}</span><span class="pow" data-fx="pow-${pid}">${pw(pid)}</span>
+        <span class="who">${pid === HUMAN ? 'Vous' : esc(this.oppName)}</span><span class="pow" data-fx="pow-${pid}">${pw(pid)}</span>
         <span class="pips">${pips}</span>${comboChip}${sd.puissanceMod ? `<span class="mod">${sd.puissanceMod}</span>` : ''}</div>`;
     };
     return `<div class="strip live">
@@ -1003,7 +1041,7 @@ class UI {
       let hint = null, dim = false, warn = false;
       if (kickTurn) {
         if (d.type !== 'K') dim = true;
-        else {
+        else if (!this.online) {
           const v = this.advisor.kickValue(g, HUMAN, c);
           hint = `≈ ${v >= 0 ? '+' : ''}${v.toFixed(1)}`;
         }
@@ -1011,14 +1049,14 @@ class UI {
       if (f && d.type === 'K' && d.abType === 'CAPACITÉ' && !d.kw.includes('BASE') && !d.kw.some(k => fkw.includes(k))) warn = true;
       return this.cardHTML(c, { hint, dim, warn, fresh: this.fresh.has(c.uid) });
     }).join('');
-    return `<h3>Votre Main <small>${hand.length}/10</small>${kickTurn ? '<span class="legend">≈ gain de marge estimé si vous posez ce Kick</span>' : ''}</h3><div class="row">${html || '<p class="empty">Main vide</p>'}</div>`;
+    return `<h3>Votre Main <small>${hand.length}/10</small>${kickTurn && !this.online ? '<span class="legend">≈ gain de marge estimé si vous posez ce Kick</span>' : ''}</h3><div class="row">${html || '<p class="empty">Main vide</p>'}</div>`;
   }
 
   /** Indication contextuelle sur une carte proposée (choix du combattant, de la cible…). */
   optionHint(req, o) {
     const g = this.game;
     if (!o.card) return null;
-    if (req.kind === 'bastonFighter' || req.kind === 'provocFighter') {
+    if ((req.kind === 'bastonFighter' || req.kind === 'provocFighter') && !this.online) {
       const t = g.targetCandidates(HUMAN).sort((a, b) => g.aura(b) - g.aura(a))[0];
       return t ? `≈ ${this.advisor.estimatePower(g, HUMAN, o.card, t).toFixed(0)} Puissance` : null;
     }
@@ -1032,6 +1070,7 @@ class UI {
   promptHTML() {
     const g = this.game, p = this.pending;
     if (g.s.over) return `<div class="prompt-body"><p class="prompt-title">Partie terminée</p></div>`;
+    if (!p && this.online) return `<div class="prompt-body waiting"><span class="dots"></span><p>${this.pvp.opp ? `Au tour de ${esc(this.oppName)}…` : `${esc(this.oppName)} a perdu la connexion : la partie reprend dès son retour.`}</p></div>`;
     if (!p) return `<div class="prompt-body waiting"><span class="dots"></span><p>${this.paused ? 'Bot en pause' : this.thinking === 'key' ? 'Le bot Expert explore des milliers de suites possibles (15 s max)…' : this.thinking === 'kick' ? 'Le bot Expert choisit son Kick (6 s max)…' : 'Le bot réfléchit…'}</p></div>`;
     const { req } = p;
     const multi = this.isMulti(req);
@@ -1049,7 +1088,7 @@ class UI {
       const pile = req.ctx?.zone === 'groupe' ? 'le Groupe' : 'le Songe';
       hints.push(`<p class="hint">Touchez, dans l'ordre, les cartes à remettre sous ${pile} : la première touchée passe sous la pile en premier, la dernière se retrouve tout en bas. Validez ensuite (aucune = garder la main). Votre adversaire ne voit que leur nombre.</p>`);
     }
-    if (req.kind === 'counter') hints.push(`<p class="hint">Le bot active « ${esc(req.options[0].ev.label)} ».</p>`);
+    if (req.kind === 'counter' && req.options[0].ev) hints.push(`<p class="hint">${this.online ? esc(this.oppName) : 'Le bot'} active « ${esc(req.options[0].ev.label)} ».</p>`);
     if (req.kind === 'kickTurn') hints.push('<p class="hint">Touchez un Kick de votre Main pour le poser.</p>');
     if (req.options.some(o => o.blocked)) hints.push('<p class="hint">Les actions marquées « impossible » restent possibles à la table : le coût est payé, l’effet est sans objet.</p>');
     if (this.advice) {
@@ -1061,7 +1100,7 @@ class UI {
     const cardList = cardOpts.length && showList && req.kind !== 'kickTurn'
       ? `<div class="row opts">${cardOpts.map(o => this.cardHTML(o.card, { small: true, mirror: true, optId: o.id, hint: this.optionHint(req, o) })).join('')}</div>` : '';
     let key = 0;
-    const isPass = o => ['pass', 'end', 'no', 'none'].includes(o.id);
+    const isPass = isPassOpt;
     const buttons = otherOpts.map(o => {
       const k = isPass(o) ? '' : ++key <= 9 ? key : '';
       const cls = isPass(o) ? 'ghost' : o.action || String(o.id).startsWith('act:') ? 'action' : 'primary';
@@ -1070,7 +1109,7 @@ class UI {
     const confirm = multi ? `<button class="btn primary" data-act="confirm" ${p.selected.size < req.min || p.selected.size > req.max ? 'disabled' : ''}><kbd>↵</kbd>Valider (${p.selected.size})</button>${p.selected.size ? '<button class="btn ghost" data-act="clear">Tout désélectionner</button>' : ''}` : '';
     return `
       <div class="prompt-body">
-        <div class="prompt-head"><p class="prompt-title">${esc(req.title)}</p><button class="btn ghost small" data-act="advice" title="Raccourci : C">Conseil</button></div>
+        <div class="prompt-head"><p class="prompt-title">${esc(req.title)}</p>${this.online ? '' : '<button class="btn ghost small" data-act="advice" title="Raccourci : C">Conseil</button>'}</div>
         ${hints.join('')}
         ${cardList}
         ${about.length === 1 ? `<div class="about"><div class="about-card">${this.cardHTML(about[0])}</div><div class="buttons about-btns">${buttons}${confirm}</div></div>` : `<div class="buttons">${buttons}${confirm}</div>`}
@@ -1096,6 +1135,8 @@ class UI {
   }
 
   cardHTML(c, { small = false, kick = false, mirror = false, optId, hint = null, dim = false, warn = false, fresh = false } = {}) {
+    // Carte adverse cachée (partie en ligne) : un dos, rien d'autre
+    if (c.hidden) return `<div class="card back ${small ? 'small' : ''}" data-uid="${c.uid}" aria-label="Carte cachée"></div>`;
     const g = this.game, d = CARDS[c.id];
     const { choosable = new Set(), selected = new Set(), advised = new Set() } = this.ctx ?? {};
     const optKey = optId ?? this.pending?.req.options.find(o => isCardPick(o) && o.card.uid === c.uid)?.id;
@@ -1153,6 +1194,7 @@ class UI {
   inspectorHTML() {
     const g = this.game, c = this.inspect;
     if (!c) return `<p class="insp-empty">Survolez ou touchez une carte pour l'afficher en grand.</p>`;
+    if (c.hidden) return '<article class="bigcard down"><h3>Carte cachée</h3><p class="bc-sub">Vous ne pouvez pas voir cette carte.</p></article>';
     const d = CARDS[c.id];
     const type = { P: 'Perso', K: 'Kick', S: 'Soutien' }[d.type];
     const fam = family(d);
@@ -1176,7 +1218,7 @@ class UI {
           </div>
         </div>
         <div class="bc-text ${this.kickOff(c) ? 'off' : ''}">${this.kickOff(c) ? `<p class="bc-off">${{ Contré: 'Capacité contrée', Neutralisé: 'Capacité neutralisée par une capacité adverse', Inactif: `Inactif : le combattant n'a pas le mot-clé requis (${d.kw.map(k => k.toLowerCase()).join(' / ')})` }[this.kickOff(c)]}</p>` : ''}<p class="bc-cond">${d.abType === 'DÉGÂT' ? 'Dégât' : 'Capacité'} · ${esc(d.cond)}</p><p>${esc(d.text)}</p></div>
-        <footer>${c.owner === HUMAN ? 'À vous' : 'Au bot'} · ${zoneLabel ?? ''}${c.faceDown ? ' · face cachée' : ''}${markers.length ? `<br>Marqueurs : ${markers.join(', ')}` : ''}</footer>
+        <footer>${c.owner === HUMAN ? 'À vous' : this.online ? `À ${esc(this.oppName)}` : 'Au bot'} · ${zoneLabel ?? ''}${c.faceDown ? ' · face cachée' : ''}${markers.length ? `<br>Marqueurs : ${markers.join(', ')}` : ''}</footer>
       </article>`;
   }
 
@@ -1199,7 +1241,8 @@ class UI {
     let inner = '';
     if (m.type === 'rules') inner = `<h2>Règles express</h2><div class="rules">${RULES}</div>`;
     if (m.type === 'quit') inner = `<h2>Quitter la partie ?</h2><p>La partie en cours sera perdue.</p><div class="buttons"><button class="btn primary" data-act="menu-now">Quitter</button><button class="btn ghost" data-act="close">Continuer à jouer</button></div>`;
-    if (m.type === 'forfeit') inner = `<h2>Abandonner ?</h2><p>La partie s'arrête et compte comme une défaite.</p><div class="buttons"><button class="btn primary" data-act="forfeit-now">Abandonner</button><button class="btn ghost" data-act="close">Continuer à jouer</button></div>`;
+    if (m.type === 'forfeit' && this.online) inner = `<h2>Abandonner la partie ?</h2><p>Votre adversaire gagne immédiatement. Quitter la page sans abandonner ne suffit pas : votre pendule continue de tourner, et après 3 minutes de déconnexion vous perdez par forfait.</p><div class="buttons"><button class="btn primary" data-act="forfeit-now">Abandonner</button><button class="btn ghost" data-act="close">Continuer à jouer</button></div>`;
+    else if (m.type === 'forfeit') inner = `<h2>Abandonner ?</h2><p>La partie s'arrête et compte comme une défaite.</p><div class="buttons"><button class="btn primary" data-act="forfeit-now">Abandonner</button><button class="btn ghost" data-act="close">Continuer à jouer</button></div>`;
     if (m.type === 'notice') inner = `<h2>${esc(m.title)}</h2><p>${esc(m.text)}</p><div class="buttons"><button class="btn primary" data-act="close">OK</button></div>`;
     if (m.type === 'delDeck') {
       const d = this.store.get(m.id);
@@ -1242,10 +1285,199 @@ class UI {
     box.querySelector('.modal').addEventListener('click', e => { if (e.target.classList.contains('modal')) this.closeModal(); });
   }
 
+  // ── Jeu entre joueurs ─────────────────────────────────────
+  pvpHTML(valid) {
+    const v = this.pvp;
+    if (!v.available) return '';
+    const sel = (id, opts, cur) => `<select id="${id}">${opts.map(([val, l]) => `<option value="${esc(val)}" ${val === cur ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+    if (!valid.some(d => d.id === this.prefs.pvpDeck)) this.prefs.pvpDeck = valid[0]?.id ?? null;
+    const msg = v.msg ? `<p class="hint ${v.msg.ok ? 'good' : 'bad'}">${esc(v.msg.ok ?? v.msg.error)}</p>` : '';
+    const legal = '<p class="store-note"><a href="/compte">Mon compte</a> · <a href="/conditions">Conditions d\'utilisation</a> · <a href="/confidentialite">Confidentialité</a> · <a href="/contact">Contact</a></p>';
+    let body;
+    if (!v.user) {
+      body = `
+        <p>Affrontez d'autres joueurs : partagez un lien d'invitation, votre adversaire le rejoint. Il faut un compte Discord (seuls votre identifiant, votre pseudo et votre avatar sont utilisés).</p>
+        ${v.invite ? '<p class="hint good">Vous avez reçu une invitation : connectez-vous pour la rejoindre.</p>' : ''}
+        <div class="match-go">${v.discord ? '<button class="btn primary big" data-act="pvp-login">Se connecter avec Discord</button>' : '<p class="hint">Connexion Discord indisponible pour le moment.</p>'}</div>
+        ${v.devLogin ? '<div class="opts"><label>Connexion factice (développement) <input id="pvp-dev-name" maxlength="24" placeholder="Pseudo"></label><button class="btn" data-act="pvp-dev-login">Se connecter</button></div>' : ''}`;
+    } else if (v.room) {
+      const left = Math.max(0, v.room.expiresAt - Date.now());
+      body = `
+        <p>Salon ${v.room.mode === 'open' ? '<b>deck ouvert</b>' : '<b>casu</b>'} créé. Envoyez ce lien à votre adversaire : il ne sert qu'une fois et expire dans ${Math.ceil(left / 60000)} min.</p>
+        <div class="pvp-invite"><input readonly value="${esc(this.inviteUrl())}" onclick="this.select()"><button class="btn primary" data-act="pvp-copy">Copier le lien</button></div>
+        <div class="match-go"><span class="dots"></span> En attente de l'adversaire… <button class="btn ghost" data-act="pvp-cancel">Annuler le salon</button></div>`;
+    } else {
+      body = `
+        <p class="store-note">Connecté : <b>${esc(v.user.name)}</b></p>
+        <div class="opts">
+          <label>Votre deck ${valid.length ? sel('pvpDeck', valid.map(d => [d.id, d.name]), this.prefs.pvpDeck) : '<span class="muted">aucun deck prêt</span>'}</label>
+          ${v.invite ? '' : `<label>Format ${sel('pvpMode', [['casu', 'Casu'], ['open', 'Casu, deck ouvert (chacun voit la decklist adverse, jamais l\'ordre)']], this.prefs.pvpMode ?? 'casu')}</label>`}
+        </div>
+        <div class="match-go">
+          ${v.invite ? `<p class="hint good">Vous êtes invité à une partie.</p><button class="btn primary big" data-act="pvp-join" ${valid.length ? '' : 'disabled'}>Rejoindre la partie</button><button class="btn ghost" data-act="pvp-forget-invite">Ignorer l'invitation</button>`
+            : `<button class="btn primary big" data-act="pvp-create" ${valid.length ? '' : 'disabled'}>Créer un salon</button>`}
+        </div>`;
+    }
+    return `<div class="match pvp"><h2>Jouer contre un joueur</h2>${msg}${body}${legal}</div>`;
+  }
+
+  inviteUrl() { return this.pvp.room ? `${location.origin}${location.pathname}?invite=${encodeURIComponent(this.pvp.room.invite)}` : ''; }
+  saveInviteForLogin() { if (this.pvp.invite) sessionStorage.setItem('dojo-pvp-invite', this.pvp.invite); }
+
+  netConnect() {
+    this.net ??= new NetClient({
+      onMessage: m => this.onNet(m),
+      onStatus: (st, code) => {
+        if (st === 'closed' && code === 4000) this.pvpNotice('Partie ouverte sur un autre appareil ou onglet.');
+        if (st === 'closed' && code === 4001) { this.pvp.user = null; this.pvpNotice('Votre session a été fermée. Reconnectez-vous.'); }
+      },
+    });
+    this.net.connect();
+  }
+
+  pvpNotice(text, error = true) {
+    this.pvp.msg = error ? { error: text } : { ok: text };
+    if (this.screen === 'setup') this.renderSetup();
+    else this.toast(text);
+  }
+
+  /** Deck choisi, au format attendu par le serveur (revérifié là-bas). */
+  pvpDeck() {
+    const d = this.store.get(this.prefs.pvpDeck);
+    if (!d || !validateDeck(d).ok) { this.pvpNotice('Choisissez un deck prêt à jouer.'); return null; }
+    try { localStorage.setItem('dojo-pvp-deck', d.id); } catch { /* stockage indisponible */ }
+    return { name: d.name, lieu: d.lieu, groupe: [...d.groupe], songe: [...d.songe] };
+  }
+
+  clientSeed() { return [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join(''); }
+
+  pvpCreate() {
+    const deck = this.pvpDeck();
+    if (deck) { this.pvp.msg = null; this.net?.send({ type: 'create', deck, mode: this.prefs.pvpMode ?? 'casu', seed: this.clientSeed() }); }
+  }
+
+  pvpJoin() {
+    const deck = this.pvpDeck();
+    if (deck) { this.pvp.msg = null; this.net?.send({ type: 'join', invite: this.pvp.invite, deck, seed: this.clientSeed() }); }
+  }
+
+  onNet(m) {
+    const v = this.pvp, g = this.online ? this.game : null;
+    switch (m.type) {
+      case 'hello': v.user = { ...v.user, ...m.user }; break;
+      case 'created': case 'waiting': v.room = { invite: m.invite, mode: m.mode, expiresAt: m.expiresAt }; v.msg = null; if (this.screen === 'setup') this.renderSetup(); break;
+      case 'cancelled': v.room = null; this.pvpNotice('Salon annulé.', false); break;
+      case 'joined': v.invite = null; break;
+      case 'start': this.startOnline(m); break;
+      case 'state': if (g) { g.load(m.view); this.scheduleRender(); } break;
+      case 'ask': if (g) this.onlineAsk(m); break;
+      case 'clock': v.clock = { ...m, at: Date.now() }; this.tickClock(); break;
+      case 'opponent': v.opp = m.connected; if (g) { this.toast(m.connected ? `${this.oppName} est de retour` : `${this.oppName} a perdu la connexion`, BOT); this.render(); } break;
+      case 'event': if (g) this.onlineEvent(m.name, m.data); break;
+      case 'over': this.onlineOver(m); break;
+      case 'replaced': break;
+      case 'error':
+        if (m.seq != null && this.lastAsk?.seq === m.seq && g) { this.onlineAsk(this.lastAsk.raw); this.toast('Réponse refusée par le serveur : choisissez de nouveau.'); break; }
+        if (m.error === 'invite-invalid') v.invite = null;
+        if (m.error === 'invite-expired') v.room = null;
+        if (m.error !== 'not-playing') this.pvpNotice(PVP_ERRORS[m.error] ? `${PVP_ERRORS[m.error]}${m.detail ? ` ${m.detail}` : ''}` : `Erreur : ${m.error}`);
+        break;
+    }
+  }
+
+  startOnline(m) {
+    const v = this.pvp;
+    v.room = null; v.invite = null; v.msg = null; v.opp = true;
+    let myDeck = null;
+    try { myDeck = this.store.get(localStorage.getItem('dojo-pvp-deck')); } catch { /* stockage indisponible */ }
+    const game = new RemoteView({ names: m.names, you: m.you, mode: m.mode, myDeck: myDeck ? { name: myDeck.name, groupe: [...myDeck.groupe] } : { name: 'Votre deck', groupe: [] } });
+    this.screen = 'game';
+    this.pool?.reset();
+    this.thinking = null;
+    Object.assign(this, {
+      game, pending: null, inspect: null, paused: false, modal: null, fxQueue: [], advice: null, lastAsk: null,
+      prev: { scores: [0, 0], power: {}, kicks: new Set(), hand: new Set(), down: new Set(), phase: '' },
+      fresh: new Set(),
+      stats: { combats: 0, won: [0, 0], combos: [0, 0], dmg: [0, 0], counters: [0, 0] },
+    });
+    this.sound.ensure();
+    this.renderModal();
+    $('#app').innerHTML = this.shell();
+    if (m.resumed) this.toast('Partie reprise');
+  }
+
+  onlineAsk(m) {
+    const g = this.game;
+    this.lastAsk = { seq: m.seq, raw: m };
+    const req = g.request(m);
+    this.pending = { req, selected: new Set(), resolve: ans => this.net.send({ type: 'answer', seq: m.seq, answer: ans }) };
+    this.advice = null;
+    if (req.kind === 'kickTurn' || req.kind === 'crepuscule' || req.kind === 'bastonFighter') this.sound.play('turn');
+    this.render();
+  }
+
+  /** Événement du serveur : numéros de joueurs ramenés au point de vue local, puis effets habituels. */
+  onlineEvent(name, d) {
+    const P = x => this.game.P(x);
+    const data = { ...d };
+    if ('pid' in data) data.pid = P(data.pid);
+    if ('w' in data) data.w = P(data.w);
+    if ('att' in data) data.att = P(data.att); // pa / pb : Puissances de l'attaquant et du défenseur, inchangées
+    if (Array.isArray(data.winners)) data.winners = data.winners.map(P);
+    this.onGameEvent(name, data);
+  }
+
+  async onlineOver(m) {
+    const g = this.online ? this.game : null;
+    this.pvp.clock = null;
+    if (!g) { this.pvpNotice(m.aborted ? `Votre dernière partie a été annulée (${m.aborted}).` : 'Votre dernière partie est terminée.', false); return; }
+    const P = x => g.P(x);
+    const scores = m.result ? (g.you === 0 ? m.result.scores : [...m.result.scores].reverse()) : [g.p(HUMAN).renommee, g.p(BOT).renommee];
+    g.s.over = true;
+    g.s.combat = null;
+    g.s.result = { winner: m.result ? P(m.result.winner) : m.winner != null ? P(m.winner) : null, scores, reason: m.reason ?? null, aborted: m.aborted ?? null, fair: null };
+    this.pending = null;
+    // Mélange vérifiable : SHA-256(graine serveur) doit être l'engagement publié au début
+    try {
+      const d = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(m.serverSeed)));
+      g.s.result.fair = [...d].map(b => b.toString(16).padStart(2, '0')).join('') === m.commit;
+    } catch { /* crypto.subtle indisponible (page non sécurisée) */ }
+    document.querySelector('.end')?.remove();
+    this.render();
+  }
+
+  /** Quitter le plateau d'une partie en ligne terminée (ou abandonnée). */
+  leaveOnline() {
+    this.game = null; this.pending = null; this.lastAsk = null;
+    document.querySelector('.end')?.remove();
+    this.closeModal();
+    this.renderSetup();
+  }
+
+  clockHTML() {
+    const c = this.pvp.clock;
+    if (!c) return '';
+    const t = c.remaining.map((x, pid) => (c.running === pid ? x - (Date.now() - c.at) : x));
+    const me = this.game.you, mine = t[me], theirs = t[1 - me];
+    const run = pid => (c.running === pid ? ' run' : '');
+    return `<span class="clk me${run(me)} ${mine < 60000 ? 'low' : ''}" title="Votre temps de réflexion">⏱ ${fmtClock(mine)}</span><span class="clk${run(1 - me)}" title="Temps de ${esc(this.oppName)}">${fmtClock(theirs)}</span>`;
+  }
+
+  tickClock() {
+    if (this.online && !this.game.s.over) { const el = $('#pvp-clock'); if (el) el.innerHTML = this.clockHTML(); }
+    if (this.screen === 'setup' && this.pvp?.room) {
+      const el = document.querySelector('.pvp .match-go');
+      if (el && this.pvp.room.expiresAt < Date.now()) { this.pvp.room = null; this.renderSetup(); }
+    }
+  }
+
   renderEnd() {
     if (document.querySelector('.end')) return;
     const g = this.game, r = g.s.result, s = this.stats;
-    const msg = r.forfeit ? 'Abandon' : r.winner === HUMAN ? 'Victoire' : r.winner === BOT ? 'Défaite' : 'Match nul';
+    if (!r) return;
+    const why = { time: ' au temps', abandon: ' par abandon', disconnect: ' par forfait' }[r.reason] ?? '';
+    const msg = r.aborted ? 'Partie annulée' : this.online && r.reason ? (r.winner === HUMAN ? `Victoire${why}` : `Défaite${why}`)
+      : r.forfeit ? 'Abandon' : r.winner === HUMAN ? 'Victoire' : r.winner === BOT ? 'Défaite' : 'Match nul';
     const hist = [[0, 0], ...g.s.history];
     const max = Math.max(1, ...hist.flat());
     const pts = pid => hist.map(([a, b], i) => `${(i / (hist.length - 1)) * 260 + 20},${110 - ((pid ? b : a) / max) * 90}`).join(' ');
@@ -1253,9 +1485,10 @@ class UI {
     el.className = 'end';
     el.innerHTML = `
       <div class="end-card">
-        <p class="eyebrow">${r.forfeit ? `Abandon à la nuit ${g.s.night}` : 'Fin de la sixième nuit'} · vs ${esc(g.p(BOT).deck.name)}</p>
+        <p class="eyebrow">${r.aborted ? esc(r.aborted) : r.forfeit || r.reason ? `Nuit ${g.s.night}` : 'Fin de la sixième nuit'} · ${this.online ? `contre ${esc(this.oppName)}` : `vs ${esc(g.p(BOT).deck.name)}`}</p>
         <h2>${msg}</h2>
-        <p class="end-score"><span>Vous ${r.scores[0]}</span><span>${r.scores[1]} Bot</span></p>
+        <p class="end-score"><span>Vous ${r.scores[0]}</span><span>${r.scores[1]} ${esc(this.oppName)}</span></p>
+        ${this.online && r.fair != null ? `<p class="hint ${r.fair ? 'good' : 'bad'}">${r.fair ? '✔ Mélange vérifié : la graine révélée correspond à l\'engagement publié avant la partie.' : '✘ La graine révélée ne correspond pas à l\'engagement.'}</p>` : ''}
         <svg class="spark" viewBox="0 0 300 130" role="img" aria-label="Renommée par nuit">
           ${hist.map((_, i) => `<text x="${(i / (hist.length - 1)) * 260 + 20}" y="126" text-anchor="middle">${i || ''}</text>`).join('')}
           <polyline points="${pts(1)}" class="l-bot"/><polyline points="${pts(0)}" class="l-me"/>
@@ -1266,7 +1499,7 @@ class UI {
           <div><dt>Dégâts infligés</dt><dd>${s.dmg[0]} — ${s.dmg[1]}</dd></div>
           <div><dt>Contres</dt><dd>${s.counters[0]} — ${s.counters[1]}</dd></div>
         </dl>
-        <div class="buttons"><button class="btn primary" data-act="rematch">Rejouer</button><button class="btn ghost" data-act="menu-now">Changer de decks</button></div>
+        <div class="buttons">${this.online ? '<button class="btn primary" data-act="menu-now">Retour à l\'accueil</button>' : '<button class="btn primary" data-act="rematch">Rejouer</button><button class="btn ghost" data-act="menu-now">Changer de decks</button>'}</div>
       </div>`;
     document.querySelector('.game').appendChild(el);
     if (r.winner === HUMAN) { this.particles.confetti(['#ffb44c', FAM_COLOR[deckFamily(g.p(HUMAN).deck)], '#fff', '#c08bff']); this.sound.play('combo'); }
