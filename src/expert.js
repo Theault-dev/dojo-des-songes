@@ -50,7 +50,7 @@ function guessIds(g, o, slots, isPerso, rand) {
   const count = new Map();
   for (const id of seen) count.set(id, (count.get(id) ?? 0) + 1);
   const pool = Object.values(CARDS).filter(d => (d.type === 'P') === isPerso);
-  const maxN = isPerso ? 1 : 4; // un Perso n'existe qu'une fois par Groupe (R67)
+  const maxN = 4; // 4 exemplaires maximum par carte, Persos compris
   const weight = d => {
     const n = count.get(d.id) ?? 0;
     if (n >= maxN) return 0;

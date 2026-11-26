@@ -9,7 +9,7 @@ Site statique pour jouer à Dreamland TCG contre des bots (Débutant heuristique
 | Fichier | Rôle |
 |---|---|
 | `official.js` | Textes officiels des cartes (map num → [condition, texte]), tirés de l'API app.dreamlandtcg.com |
-| `data.js` | Définition des 178 cartes (Persos, Kicks, Soutiens, Lieux) ; applique `official.js` ; validation de deck (1 exemplaire par Perso, 4 pour les autres, R67) |
+| `data.js` | Définition des 178 cartes (Persos, Kicks, Soutiens, Lieux) ; applique `official.js` ; validation de deck (4 exemplaires maximum par carte, Persos compris) |
 | `effects.js` | Effets de cartes, déclencheurs de fin de combat, contres (`counterOptions`) |
 | `engine.js` | Moteur asynchrone : nuits, Baston, combats, Combos, contres (`offerCounter`, R1), mulligans R69/R70, Soutiens en piles, `kickForce` / `liveMarker`, suivi de diagnostic (`trace`, `report`) |
 | `bot.js` | Bot Débutant (heuristique) ; ignore les options `blocked` (`withoutBlocked`) |

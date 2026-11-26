@@ -99,7 +99,7 @@ const RULES = `
   <h3>Un combat</h3>
   <p>Chacun pose autant de Kicks que l'Aura de son combattant, en alternant. La Puissance est la somme des Forces, plus le bonus Combo si les Rangs du Combo sont réunis (★ remplace n'importe quel Rang). Le vainqueur gagne une Renommée égale à l'Aura du combattant adverse, puis peut infliger <b>un</b> dégât. En cas d'égalité, les deux gagnent.</p>
   <h3>Fin</h3><p>Après la 6ᵉ nuit, le plus de Renommée gagne. Égalité : le plus de Persos visibles dans l'Arène l'emporte.</p>
-  <h3>Construire un deck</h3><p>1 Lieu, un Groupe de Persos dont la somme des Auras ne dépasse pas ${DECK_RULES.maxAura} (un seul exemplaire de chaque Perso), un Songe de ${DECK_RULES.minSonge} à ${DECK_RULES.maxSonge} Kicks et Soutiens (${DECK_RULES.maxCopies} exemplaires maximum par carte).</p>
+  <h3>Construire un deck</h3><p>1 Lieu, un Groupe de Persos dont la somme des Auras ne dépasse pas ${DECK_RULES.maxAura}, un Songe de ${DECK_RULES.minSonge} à ${DECK_RULES.maxSonge} Kicks et Soutiens (${DECK_RULES.maxCopies} exemplaires maximum par carte).</p>
   <h3>Raccourcis</h3><p><kbd>1</kbd>–<kbd>9</kbd> boutons, <kbd>P</kbd> passer, <kbd>Entrée</kbd> valider, <kbd>C</kbd> conseil, <kbd>Échap</kbd> annuler / fermer.</p>`;
 
 const norm = s => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
@@ -383,7 +383,7 @@ class UI {
     else badge = `<span class="badge sup">L</span><span class="type">Lieu</span>`;
     const text = d.type === 'L' ? d.abilities.map(a => a.text).join(' · ') : d.text;
     return `
-      <div class="bt fam-${fam} ${n ? 'in' : ''} ${full ? 'full' : ''} ${this.artUrl(d) ? 'art' : ''}" ${this.artUrl(d) ? `style="--art:url('${this.artUrl(d)}')"` : ''} data-def="${d.id}" data-act="bd-add" tabindex="0" title="${esc(full ? (max === 1 ? 'Un seul exemplaire par Perso' : `${max} exemplaires maximum`) : 'Ajouter au deck')}">
+      <div class="bt fam-${fam} ${n ? 'in' : ''} ${full ? 'full' : ''} ${this.artUrl(d) ? 'art' : ''}" ${this.artUrl(d) ? `style="--art:url('${this.artUrl(d)}')"` : ''} data-def="${d.id}" data-act="bd-add" tabindex="0" title="${esc(full ? `${max} exemplaires maximum` : 'Ajouter au deck')}">
         <div class="card-top">${badge}<span class="bt-num">${numLabel(d.num)}</span></div>
         <div class="card-name">${esc(d.name)}</div>
         ${d.sub ? `<div class="card-sub">${esc(d.sub)}</div>` : ''}

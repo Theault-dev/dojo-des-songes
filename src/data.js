@@ -394,10 +394,11 @@ for (const d of [...Object.values(CARDS), ...Object.values(LIEUX)]) BY_NUM[d.num
 export const numLabel = n => `${String(n).padStart(3, '0')}/FDS 1`;
 
 // ── Construction de deck ─────────────────────────────────────
-// Un Groupe peut être vide (R54) ; chaque Perso n'y figure qu'une fois (R67).
+// Un Groupe peut être vide (R54). Un même Perso peut figurer jusqu'à 4 fois dans le Groupe, comme les autres cartes ;
+// deux Persos qui partagent un nom ne peuvent toutefois pas être ensemble dans l'Arène (R40).
 export const DECK_RULES = { maxAura: 20, minSonge: 30, maxSonge: 60, maxCopies: 4 };
-/** Exemplaires maximum d'une carte dans un deck : 1 pour un Perso (R67), 4 pour le reste. */
-export const maxCopies = d => (d?.type === 'P' ? 1 : DECK_RULES.maxCopies);
+/** Exemplaires maximum d'une carte dans un deck : 4, Persos compris. */
+export const maxCopies = () => DECK_RULES.maxCopies;
 
 /** Vérifie un deck { name, lieu, groupe: [ids], songe: [ids] }. */
 export function validateDeck(deck) {

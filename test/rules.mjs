@@ -8,7 +8,8 @@ import assert from 'node:assert/strict';
 assert(sharesName(CARDS.HUAM, CARDS.ALANA_HUAM)); assert(!sharesName(CARDS.HUAM, CARDS.ALANA1)); assert(sharesName(CARDS.LION2, CARDS.LION4));
 const base = randomDeck(5, 'FEU');
 assert(!validateDeck({ ...base, groupe: ['HUAM', 'ALANA_HUAM'] }).errors.some(e => /exemplaires/.test(e)));
-assert(validateDeck({ ...base, groupe: ['HUAM', 'HUAM'] }).errors.some(e => /exemplaires/.test(e)));
+assert(!validateDeck({ ...base, groupe: ['HUAM', 'HUAM'] }).errors.some(e => /exemplaires/.test(e)));
+assert(validateDeck({ ...base, groupe: Array(5).fill('HUAM') }).errors.some(e => /exemplaires/.test(e)));
 assert(validateDeck({ ...base, groupe: [] }).ok);
 assert(!('minPersos' in DECK_RULES));
 
