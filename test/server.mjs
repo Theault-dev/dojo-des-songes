@@ -142,6 +142,13 @@ done.push('origine étrangère, absence de session, session inconnue : refusés'
   await c.type('hello');
   c.send({ type: 'create', deckText: '1 001/FDS' });
   assert.equal((await c.type('error')).error, 'deck-invalid');
+  // Clés héritées d'Object : ni Lieu ni carte (le Lieu « constructor » faisait planter l'écran adverse)
+  for (const lieu of ['constructor', '__proto__', 'toString']) {
+    c.send({ type: 'create', deck: { ...J1, lieu } });
+    assert.equal((await c.type('error')).error, 'deck-invalid', `Lieu « ${lieu} » accepté`);
+  }
+  c.send({ type: 'create', deck: { ...J1, songe: [...J1.songe.slice(1), 'constructor'] } });
+  assert.equal((await c.type('error')).error, 'deck-invalid');
   c.send({ type: 'join', invite: 'nimportequoi', deckText: DECK_A });
   assert.equal((await c.type('error')).error, 'invite-invalid');
   c.send({ type: 'answer', seq: 1, answer: 'o0' });

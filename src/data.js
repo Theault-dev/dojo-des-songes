@@ -12,7 +12,7 @@ const combo = (bonus, ...ranks) => ({ bonus, ranks });
 
 import { OFFICIAL } from './official.js';
 
-export const CARDS = {};
+export const CARDS = Object.create(null); // sans prototype : « constructor », « __proto__ »… ne sont pas des cartes
 const add = (...defs) => defs.forEach(d => (CARDS[d.id] = d));
 
 // ── Feu ──────────────────────────────────────────────────────
@@ -358,7 +358,7 @@ const LIEU_EFFECTS = {
   ],
 };
 const L = (num, id, name, effect) => ({ num, id, type: 'L', name, effect, abilities: LIEU_EFFECTS[effect], kw: [], text: '' });
-export const LIEUX = {};
+export const LIEUX = Object.create(null); // idem : un deck reçu ne peut pas désigner un Lieu hérité
 [
   L(189, 'PUZZLE', 'Puzzle Village', 'CRANE'), L(190, 'LAC_BLANC', 'Lac Blanc', 'CRANE'), L(191, 'CRANE', 'Crâne du Dragon', 'CRANE'),
   L(192, 'CHAMPILAND', 'Champiland', 'DEESSES'), L(193, 'ZONE2', 'Zone 2', 'DEESSES'), L(194, 'DEESSES', 'Royaume des 2 Déesses', 'DEESSES'),
