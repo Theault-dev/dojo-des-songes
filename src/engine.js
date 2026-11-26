@@ -1083,8 +1083,11 @@ export class Game {
     const c = this.s.combat, l = this.other(w);
     const dmgs = FX.availableDamages(this, w);
     if (!dmgs.length) return;
+    // Méga mandale reste proposée sur une égalité, mais signalée : elle sera contrée (et comptera comme infligée, R60)
+    const tieCountered = d => tie && d.id === 'MEGA_MANDALE';
     const ans = await this.chooseOption(w, 'damage', 'Victoire : infliger un dégât ?', [
-      ...dmgs.map((d, i) => ({ id: `d:${i}`, label: d.label, card: d.card, dmgId: d.id })), { id: 'none', label: 'Aucun dégât' }]);
+      ...dmgs.map((d, i) => ({ id: `d:${i}`, label: tieCountered(d) ? `${d.label} — contrée : égalité` : d.label, card: d.card, dmgId: d.id, countered: tieCountered(d) || undefined })),
+      { id: 'none', label: 'Aucun dégât' }]);
     if (ans === 'none') return;
     const dmg = dmgs[+ans.slice(2)];
     if (dmg.cost) await dmg.cost();

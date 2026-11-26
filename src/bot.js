@@ -738,7 +738,7 @@ export class Bot {
   }
 
   damage(g, pid, req) {
-    const opts = req.options.filter(o => o.dmgId);
+    const opts = req.options.filter(o => o.dmgId && !o.countered);
     const best = maxBy(opts, o => this.damageValue(g, pid, o.dmgId) - (o.dmgId === 'BATTE' ? 0.5 : 0));
     return best?.id ?? 'none';
   }

@@ -1038,6 +1038,13 @@ class UI {
     return null;
   }
 
+  /** Recherche (Songe, Groupe…) : une seule carte par nom est proposée, on indique combien d'exemplaires restent dans sa zone. */
+  copiesLeft(req, o) {
+    if (req.kind !== 'search' || !o.card || o.card.owner == null) return null;
+    const zone = this.game.p(o.card.owner)[o.card.zone];
+    return Array.isArray(zone) ? zone.filter(c => c.id === o.card.id).length : null;
+  }
+
   promptHTML() {
     const g = this.game, p = this.pending;
     if (g.s.over) return `<div class="prompt-body"><p class="prompt-title">Partie terminée</p></div>`;
@@ -1068,7 +1075,7 @@ class UI {
     const onBoard = new Set([...document.querySelectorAll('.board [data-uid]')].map(el => +el.dataset.uid));
     const showList = multi || cardOpts.some(o => !onBoard.has(o.card.uid)) || cardOpts.length <= 6;
     const cardList = cardOpts.length && showList && req.kind !== 'kickTurn'
-      ? `<div class="row opts">${cardOpts.map(o => this.cardHTML(o.card, { small: true, mirror: true, optId: o.id, hint: this.optionHint(req, o) })).join('')}</div>` : '';
+      ? `<div class="row opts">${cardOpts.map(o => this.cardHTML(o.card, { small: true, mirror: true, optId: o.id, hint: this.optionHint(req, o), copies: this.copiesLeft(req, o) })).join('')}</div>` : '';
     let key = 0;
     const isPass = o => ['pass', 'end', 'no', 'none'].includes(o.id);
     const buttons = otherOpts.map(o => {
@@ -1104,7 +1111,7 @@ class UI {
     return null;
   }
 
-  cardHTML(c, { small = false, kick = false, mirror = false, optId, hint = null, dim = false, warn = false, fresh = false } = {}) {
+  cardHTML(c, { small = false, kick = false, mirror = false, optId, hint = null, dim = false, warn = false, fresh = false, copies = null } = {}) {
     const g = this.game, d = CARDS[c.id];
     const { choosable = new Set(), selected = new Set(), advised = new Set() } = this.ctx ?? {};
     const optKey = optId ?? this.pending?.req.options.find(o => isCardPick(o) && o.card.uid === c.uid)?.id;
@@ -1155,6 +1162,7 @@ class UI {
         ${markers ? `<div class="markers">${markers}</div>` : ''}
         ${states.length || hint ? `<div class="card-foot">${states.length ? `<div class="card-state">${states.map(s => `<span>${esc(s)}</span>`).join('')}</div>` : ''}${hint ? `<div class="card-hint">${esc(hint)}</div>` : ''}</div>` : ''}
         ${fresh ? '<span class="new-dot" title="Piochée cette nuit"></span>' : ''}
+        ${copies != null ? `<span class="copies-n" title="Exemplaires restants">×${copies}</span>` : ''}
         ${c.faceDown ? '<div class="down-label">Face cachée</div>' : ''}
       </div>`;
   }

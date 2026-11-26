@@ -454,7 +454,8 @@ button.count { cursor: pointer; } button.count:hover { color: var(--fg); backgro
 .sup-pile.multi::before, .sup-pile.multi::after { content: ""; position: absolute; inset: 6px 0 0 6px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); z-index: 0; }
 .sup-pile.multi::after { inset: 3px 3px 3px 3px; }
 .sup-pile .card { position: relative; z-index: 1; }
-.pile-n { position: absolute; z-index: 2; top: -6px; right: -2px; font: 700 11px var(--f-mono); background: var(--dawn); color: var(--dawn-ink); padding: 2px 6px; border-radius: 999px; }
+.copies-n { position: absolute; z-index: 3; bottom: 4px; right: 4px; font: 700 10px var(--f-mono); background: var(--dawn); color: var(--dawn-ink); padding: 1px 5px; border-radius: 999px; pointer-events: none; }
+.pile-n {position: absolute; z-index: 2; top: -6px; right: -2px; font: 700 11px var(--f-mono); background: var(--dawn); color: var(--dawn-ink); padding: 2px 6px; border-radius: 999px; }
 .mz .stack .sup-pile + .sup-pile { margin-left: -4cqw; }
 
 /* ── Familles supplémentaires ─────────────────── */
